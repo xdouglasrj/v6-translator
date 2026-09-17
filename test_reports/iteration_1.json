@@ -1,0 +1,30 @@
+{
+  "summary": "Preview Expo validado em viewport móvel 390x844: tela V6, frase exata, fallback Bluetooth, reprodução, parar, repetir, diagnóstico, TESTAR SOM e LIMPAR funcionaram.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/test_reports/iteration_1.json"],
+  "action_items": [
+    "Gerar e testar um APK em aparelho Android com os dois V6 Plus; a garantia de AudioAttributes nativos não pode ser confirmada no preview web.",
+    "Confirmar no APK que o TTS permanece em USAGE_MEDIA/CONTENT_TYPE_SPEECH/STREAM_MUSIC e que MODE_IN_COMMUNICATION e Bluetooth SCO nunca são solicitados."
+  ],
+  "critical_code_review_comments": [
+    "O build Gradle não foi executado porque o container não possui Java/JAVA_HOME; módulo Kotlin foi validado por inspeção estática.",
+    "A busca estática não encontrou pedidos de RECORD_AUDIO, localização, setMode, startBluetoothSco ou setBluetoothScoOn.",
+    "O modo nativo pode exibir MODE_IN_COMMUNICATION se outra aplicação o tiver definido; isso é diagnóstico, não uma solicitação feita pelo módulo."
+  ],
+  "updated_files": ["/app/test_reports/iteration_1.json"],
+  "success_rate": {"backend": "not applicable; no backend API used", "frontend": "100% (9/9 critical UI checks)"},
+  "seed_data_creation": "None",
+  "retest_needed": true,
+  "should_call_test_agent_after_fix": true,
+  "context_for_next_testing_agent": "Preview público https://viagem-translator.preview.emergentagent.com; web fallback intentionally reports Prévia web and no Bluetooth. Physical Android/APK test remains required.",
+  "rca_of_issue": "No reproducible preview issue. Native Android audio routing remains unverified because Gradle could not start without Java in the test container."
+}

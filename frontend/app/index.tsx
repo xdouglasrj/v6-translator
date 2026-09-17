@@ -125,7 +125,9 @@ export default function Index() {
     setTimeout(() => void handlePlay(), 120);
   };
 
-  const nativeLabel = isNativeMediaTtsAvailable ? "MÓDULO MEDIA ATIVO" : "PRÉVIA · MEDIA NO APK";
+  const nativeLabel = Platform.OS === "android"
+    ? (isNativeMediaTtsAvailable ? "MÓDULO MEDIA ATIVO" : "MÓDULO NATIVO NECESSÁRIO")
+    : "PRÉVIA · MEDIA NO APK";
 
   return (
     <View style={styles.root} testID="v6-app">

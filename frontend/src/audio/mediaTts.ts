@@ -34,12 +34,19 @@ export const isNativeMediaTtsAvailable = Boolean(nativeTts);
 
 export async function prepareMediaTts(): Promise<Record<string, unknown>> {
   if (nativeTts) return nativeTts.prepare();
+  if (Platform.OS === "android") {
+    throw new Error("O módulo nativo de mídia é necessário no Android para garantir USAGE_MEDIA.");
+  }
   return { usage: "USAGE_MEDIA", contentType: "CONTENT_TYPE_SPEECH", stream: "STREAM_MUSIC" };
 }
 
 export function speakAsMedia(onDone?: () => void, onError?: (error: Error) => void): void {
   if (nativeTts) {
     nativeTts.speak(TEST_PHRASE, "pt-BR").then(onDone).catch((error: Error) => onError?.(error));
+    return;
+  }
+  if (Platform.OS === "android") {
+    onError?.(new Error("Módulo nativo de mídia não disponível. Nenhum áudio de chamada será usado."));
     return;
   }
   Speech.speak(TEST_PHRASE, {
@@ -53,7 +60,7 @@ export function speakAsMedia(onDone?: () => void, onError?: (error: Error) => vo
 export async function stopMediaTts(): Promise<void> {
   if (nativeTts) {
     await nativeTts.stop();
-  } else {
+  } else if (Platform.OS !== "android") {
     Speech.stop();
   }
 }
