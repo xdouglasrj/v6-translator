@@ -1,0 +1,6 @@
+{
+  "name": "v6-media-tts",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/index.ts"
+}

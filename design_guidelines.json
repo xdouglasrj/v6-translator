@@ -1,0 +1,115 @@
+{
+  "app_name": "V6 Intercom Audio Tester",
+  "personality": "7 Dark-First Utility DARK",
+  "personality_one_liner": "A precision command-center utility for physical motorcycle V6 Plus Bluetooth intercom audio routing validation and media TTS testing.",
+  "color": {
+    "surface": "#121418",
+    "onSurface": "#F0F2F5",
+    "surfaceSecondary": "#1A1D24",
+    "onSurfaceSecondary": "#F0F2F5",
+    "surfaceTertiary": "#222630",
+    "onSurfaceTertiary": "#9BA1B0",
+    "surfaceInverse": "#FFFFFF",
+    "onSurfaceInverse": "#121418",
+    "brand": "#FF5722",
+    "brandPrimary": "#FF5722",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#E64A19",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#2A1C17",
+    "onBrandTertiary": "#FF8A65",
+    "success": "#2E7D32",
+    "onSuccess": "#E8F5E9",
+    "warning": "#F57C00",
+    "onWarning": "#FFF3E0",
+    "error": "#D32F2F",
+    "onError": "#FFEBEE",
+    "info": "#0288D1",
+    "onInfo": "#E1F5FE",
+    "border": "#2C313C",
+    "borderStrong": "#FF5722",
+    "divider": "#222630",
+    "muted": "#8A90A2",
+    "onBrand": "#FFFFFF"
+  },
+  "typography": {
+    "displayFontFamily": "Barlow Condensed",
+    "textFontFamily": "Satoshi",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous touch targets (min 56pt), strict 8pt grid rhythm, sticky primary actions at bottom with safe-area clearance.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "0",
+  "navigation": "bottom_tabs",
+  "icon_set": "MaterialCommunityIcons",
+  "glassmorphism": {
+    "enabled": false,
+    "do's": [
+      "Use solid obsidian and graphite surfaces with high-contrast warm signal orange accents for maximum outdoor readability under helmet and sun conditions."
+    ],
+    "dont's": [
+      "Avoid glassmorphism blur and low-contrast grey text to ensure compliance with command-center utility clarity."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "V6 Test",
+      "purpose": "Control V6 Plus audio test playback, test phrase verification, route status, and Repeat/Stop/Play commands.",
+      "states": {
+        "loading": "Checking Bluetooth adapter and connected V6 Plus sink states...",
+        "empty": "No V6 Plus intercom paired or active in system audio routes.",
+        "error": "Bluetooth adapter disabled or missing BLUETOOTH_CONNECT permission."
+      },
+      "layout": "Vertical stack with top Bluetooth route status card, live output destination indicator, central Test Phrase display box ('Teste de áudio. Se você está ouvindo esta mensagem nos dois intercomunicadores, o compartilhamento de áudio está funcionando.'), large tactile primary action buttons for Play Test, Stop, and Repeat, followed by live event log feed."
+    },
+    {
+      "name": "Audio Diagnostics",
+      "purpose": "Provide low-level inspection of Android AudioManager state, AudioAttributes (USAGE_MEDIA enforcement), Bluetooth profiles, and timestamped log events.",
+      "states": {
+        "loading": "Gathering AudioManager and AudioAttributes metrics...",
+        "empty": "No diagnostic records logged yet.",
+        "error": "Failed to query system audio service."
+      },
+      "layout": "Structured parameter rows displaying Audio Mode, Audio Attributes (USAGEMEDIA confirmed), active Bluetooth device address, connection profile, API level, and exportable timestamped log list with Clear Log action."
+    }
+  ],
+  "images": {
+    "v6_hero_backdrop": {
+      "url": "https://images.unsplash.com/photo-1641229896213-0ddb5b0151ce?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzB8MHwxfHNlYXJjaHwyfHxtb3RvcmN5Y2xlJTIwYmx1ZXRvb3RoJTIwaW50ZXJjb20lMjBoZWFkc2V0fGVufDB8fHx8MTc4OTYxMzc3Mnww&ixlib=rb-4.1.0&q=85",
+      "alt": "Motorcycle helmet with Bluetooth V6 intercom mounted on side"
+    }
+  },
+  "instructions_to_main_agent": "Implement Fase 1 utility app strictly per problem statement. Use Dark-First Utility theme (obsidian #121418 with signal orange #FF5722). Ensure TTS playback is explicitly routed as USAGE_MEDIA (never SCO or VoIP call mode). Include exact test phrase: 'Teste de áudio. Se você está ouvindo esta mensagem nos dois intercomunicadores, o compartilhamento de áudio está funcionando.'. Show Bluetooth V6 status, route availability, Reproduzir Teste, Parar, Repetir, and Audio Diagnostics screen with timestamped log. Minimum audio permissions only without microphone/location requests."
+}
