@@ -3,6 +3,7 @@ import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Linking,
   PermissionsAndroid,
   Platform,
   Pressable,
@@ -21,6 +22,14 @@ import {
   stopMediaTts,
   TEST_PHRASE,
   type AudioSnapshot,
+  startMicRecording,
+  stopMicRecording,
+  startMicPlayback,
+  stopMicPlayback,
+  addMicListener,
+  type RecordingStartResult,
+  type RecordingStopEvent,
+  type RouteChangeEvent,
 } from "@/src/audio/mediaTts";
 import { makeStyles, useTheme } from "@/src/theme";
 
@@ -46,6 +55,12 @@ export default function Index() {
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
   const [preparing, setPreparing] = useState(false);
+
+  const [micRecording, setMicRecording] = useState<"idle" | "recording" | "recorded">("idle");
+  const [micPlaying, setMicPlaying] = useState(false);
+  const [micCountdown, setMicCountdown] = useState(0);
+  const [micRecordingInfo, setMicRecordingInfo] = useState<RecordingStartResult | null>(null);
+  const [micPermissionDenied, setMicPermissionDenied] = useState(false);
 
   const addLog = useCallback((text: string, tone?: LogItem["tone"]) => {
     const now = new Date();
@@ -125,6 +140,116 @@ export default function Index() {
     setTimeout(() => void handlePlay(), 120);
   };
 
+  useEffect(() => {
+    const subs = [
+      addMicListener("onRecordingStop", (...args: unknown[]) => {
+        const evt = args[0] as RecordingStopEvent;
+        setMicRecording("recorded");
+        setMicCountdown(0);
+        addLog(`Gravação encerrada · ${(evt.bytes / 1024).toFixed(1)} KB · ${evt.durationMs}ms`, "good");
+        addLog(`Modo: ${evt.mode}`);
+        void refreshAudio();
+      }),
+      addMicListener("onPlaybackStart", (...args: unknown[]) => {
+        setMicPlaying(true);
+        addLog("Reprodução da gravação iniciada", "good");
+      }),
+      addMicListener("onPlaybackStop", (...args: unknown[]) => {
+        setMicPlaying(false);
+        addLog("Reprodução da gravação encerrada", "good");
+        void refreshAudio();
+      }),
+      addMicListener("onRouteChange", (...args: unknown[]) => {
+        const evt = args[0] as RouteChangeEvent;
+        addLog(`TROCA DE ROTA · ${evt.before} → ${evt.after}`, "warn");
+      }),
+    ];
+    return () => { subs.forEach((s) => s.remove()); };
+  }, [addMicListener, addLog, refreshAudio]);
+
+  const handleMicRecord = async () => {
+    if (micRecording === "recording") return;
+    if (micPlaying) {
+      await stopMicPlayback().catch(() => {});
+      setMicPlaying(false);
+    }
+    if (Platform.OS === "android" && isNativeMediaTtsAvailable) {
+      const result = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+        {
+          title: "Permissão de microfone",
+          message: "O aplicativo usa o microfone para gravar um teste de 5 segundos. A gravação fica só no celular e é substituída na próxima.",
+          buttonPositive: "Permitir",
+          buttonNegative: "Agora não",
+        },
+      );
+      if (result === PermissionsAndroid.RESULTS.DENIED || result === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN) {
+        setMicPermissionDenied(true);
+        addLog("Permissão de microfone negada", "warn");
+        return;
+      }
+    }
+    setMicPermissionDenied(false);
+    addLog("Preparando gravação...");
+    try {
+      const info = await startMicRecording();
+      setMicRecordingInfo(info);
+      setMicRecording("recording");
+      setMicCountdown(5);
+      addLog("Gravando 5 segundos...", "accent");
+      addLog(`Modo: ${info.mode}`);
+      addLog(`Entradas: ${info.inputs.length} · Saídas: ${info.outputs.length}`);
+      addLog(`Microfone interno: ${info.builtInMicFound ? "detectado" : "não identificado"}`, info.builtInMicFound ? "good" : "warn");
+      if (info.routedInput !== "indisponível") {
+        addLog(`Entrada real: ${info.routedInput}`, "accent");
+      }
+      const interval = setInterval(() => {
+        setMicCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(interval);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "falha ao gravar";
+      addLog(`Falha na gravação: ${msg}`, "warn");
+    }
+  };
+
+  const handleMicStopRecording = async () => {
+    if (micRecording !== "recording") return;
+    try {
+      await stopMicRecording();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "falha ao parar";
+      addLog(`Falha ao parar gravação: ${msg}`, "warn");
+      setMicRecording("idle");
+      setMicCountdown(0);
+    }
+  };
+
+  const handleMicPlay = async () => {
+    if (micPlaying || micRecording === "recording") return;
+    addLog("Preparando reprodução da gravação...");
+    try {
+      const info = await startMicPlayback();
+      addLog(`Modo: ${info.mode} · Foco: ${info.focus}`, info.focus === "concedido" ? "good" : "warn");
+      addLog(`Uso: ${info.usage} · Tipo: ${info.contentType}`, "accent");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "falha ao reproduzir";
+      addLog(`Falha na reprodução: ${msg}`, "warn");
+    }
+  };
+
+  const handleMicStop = async () => {
+    if (!micPlaying) return;
+    await stopMicPlayback().catch(() => {});
+    setMicPlaying(false);
+    addLog("Reprodução da gravação interrompida", "warn");
+  };
+
   const nativeLabel = Platform.OS === "android"
     ? (isNativeMediaTtsAvailable ? "MÓDULO MEDIA ATIVO" : "MÓDULO NATIVO NECESSÁRIO")
     : "PRÉVIA · MEDIA NO APK";
@@ -169,6 +294,15 @@ export default function Index() {
               onRepeat={handleRepeat}
               logs={logs}
               styles={styles}
+              micRecording={micRecording}
+              micPlaying={micPlaying}
+              micCountdown={micCountdown}
+              micRecordingInfo={micRecordingInfo}
+              micPermissionDenied={micPermissionDenied}
+              onMicRecord={handleMicRecord}
+              onMicStopRecording={handleMicStopRecording}
+              onMicPlay={handleMicPlay}
+              onMicStop={handleMicStop}
             />
           ) : (
             <DiagnosticsScreen
@@ -247,6 +381,15 @@ function TestScreen({
   onRepeat,
   logs,
   styles,
+  micRecording,
+  micPlaying,
+  micCountdown,
+  micRecordingInfo,
+  micPermissionDenied,
+  onMicRecord,
+  onMicStopRecording,
+  onMicPlay,
+  onMicStop,
 }: {
   snapshot: AudioSnapshot;
   loading: boolean;
@@ -257,6 +400,15 @@ function TestScreen({
   onRepeat: () => void;
   logs: LogItem[];
   styles: ReturnType<typeof useStyles>;
+  micRecording: "idle" | "recording" | "recorded";
+  micPlaying: boolean;
+  micCountdown: number;
+  micRecordingInfo: RecordingStartResult | null;
+  micPermissionDenied: boolean;
+  onMicRecord: () => void;
+  onMicStopRecording: () => void;
+  onMicPlay: () => void;
+  onMicStop: () => void;
 }) {
   const { colors } = useTheme();
   return (
@@ -302,6 +454,92 @@ function TestScreen({
       </View>
       <LogPreview logs={logs} styles={styles} />
       {loading ? <Text style={styles.loadingText}>Consultando AudioManager...</Text> : null}
+
+      <View style={[styles.sectionHeading, { marginTop: 28 }]}>
+        <Text style={styles.sectionTitle}>FASE 2 · TESTE DO MICROFONE</Text>
+        <Text style={styles.sectionSubtitle}>Grave e reproduza para validar o microfone sem derrubar o Music Sharing.</Text>
+      </View>
+
+      {Platform.OS === "web" || !isNativeMediaTtsAvailable ? (
+        <View style={styles.diagnosticCard}>
+          <Text style={styles.metricValue}>Disponível só no APK Android</Text>
+        </View>
+      ) : (
+        <>
+          <View style={styles.diagnosticCard}>
+            <View style={styles.metricRow}>
+              <Text style={styles.metricLabel}>MICROFONE</Text>
+              <Text style={styles.metricValue}>Interno do celular</Text>
+            </View>
+            <View style={styles.metricRow}>
+              <Text style={styles.metricLabel}>GRAVAÇÃO</Text>
+              <Text style={[styles.metricValue, micRecording === "recording" && { color: colors.warning }]}>
+                {micRecording === "idle" ? "Nenhuma" : micRecording === "recording" ? `Gravando ${micCountdown}s…` : "Pronta"}
+              </Text>
+            </View>
+            <View style={styles.metricRow}>
+              <Text style={styles.metricLabel}>SAÍDA</Text>
+              <Text style={styles.metricValue}>{snapshot.routeType}</Text>
+            </View>
+            <View style={[styles.metricRow, { borderBottomWidth: 0 }]}>
+              <Text style={styles.metricLabel}>ROTA</Text>
+              <Text style={styles.metricValue}>{snapshot.deviceName}</Text>
+            </View>
+          </View>
+
+          {micPermissionDenied && (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => Linking.openSettings()}
+              style={({ pressed }) => [styles.outlineButton, pressed && styles.buttonPressed]}
+            >
+              <MaterialCommunityIcons name="cog" size={20} color={colors.warning} />
+              <Text style={[styles.outlineButtonText, { color: colors.warning }]}>ABRIR CONFIGURAÇÕES</Text>
+            </Pressable>
+          )}
+
+          <View style={styles.actionStack}>
+            {micRecording === "recording" ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={onMicStopRecording}
+                style={({ pressed }) => [styles.primaryButton, { backgroundColor: colors.warning }, pressed && styles.buttonPressed]}
+              >
+                <MaterialCommunityIcons name="stop" size={24} color={colors.onSurface} />
+                <Text style={[styles.primaryButtonText, { color: colors.onSurface }]}>PARAR GRAVAÇÃO</Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                accessibilityRole="button"
+                onPress={onMicRecord}
+                disabled={micPlaying}
+                style={({ pressed }) => [styles.primaryButton, (pressed || micPlaying) && styles.buttonPressed]}
+              >
+                <MaterialCommunityIcons name="microphone" size={24} color={colors.onBrandPrimary} />
+                <Text style={styles.primaryButtonText}>{micRecording === "recorded" ? "GRAVAR NOVAMENTE" : "GRAVAR 5 SEGUNDOS"}</Text>
+              </Pressable>
+            )}
+            <View style={styles.secondaryActions}>
+              <ActionButton
+                icon="play"
+                label="REPRODUZIR GRAVAÇÃO"
+                onPress={onMicPlay}
+                disabled={micRecording !== "recorded" || micPlaying}
+                testID="mic-play-button"
+                styles={styles}
+              />
+              <ActionButton
+                icon="stop"
+                label="PARAR"
+                onPress={onMicStop}
+                disabled={!micPlaying}
+                testID="mic-stop-button"
+                styles={styles}
+              />
+            </View>
+          </View>
+        </>
+      )}
     </View>
   );
 }

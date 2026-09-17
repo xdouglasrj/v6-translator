@@ -14,7 +14,8 @@
     "android": {
       "permissions": [
         "BLUETOOTH",
-        "BLUETOOTH_CONNECT"
+        "BLUETOOTH_CONNECT",
+        "RECORD_AUDIO"
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
