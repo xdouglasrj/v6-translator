@@ -54,12 +54,16 @@ sessão Realtime da OpenAI (branch `fase4-realtime`, tags
 - Idiomas do MVP: português (Brasil), inglês, espanhol e francês.
 - Nada de gravação permanente de áudio. O texto da conversa vive só na sessão.
 
-## Ainda não medido (só o teste físico responde)
+## Medido no aparelho (17/09/2026)
 
-1. Se o V6 entrega a voz ao celular com o capacete fechado, em cidade e devagar.
-2. Se, com o microfone do V6 em uso, a voz do app sai no V6 ou no alto-falante
-   do celular — e, se sair errado, qual ajuste de rota corrige.
-3. Quanto tempo passa entre a pessoa parar de falar e o outro ouvir a tradução.
+Chamada de WhatsApp entre os dois celulares, cada um com o seu V6, de capacete:
+funcionou nos dois sentidos. Isso prova que o V6 entrega a voz ao celular e que
+o som do celular volta pelo fone do capacete com o microfone em uso — o modo
+chamada do Bluetooth serve, e o vento de cidade não atrapalhou.
+
+## Ainda não medido
+
+1. Quanto tempo passa entre a pessoa parar de falar e o outro ouvir a tradução.
 
 ---
 
