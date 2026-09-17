@@ -31,6 +31,7 @@ Validar, antes de construir o tradutor completo, se uma voz sintetizada enviada 
 - **2026-09-17:** tela Diagnóstico de Áudio, logs de sessão, limpar log e teste de som.
 - **2026-09-17:** fallback Android inseguro bloqueado: sem módulo nativo, nenhuma fala é enviada pelo `expo-speech`; a prévia web continua funcional para inspeção visual.
 - **2026-09-17:** TypeScript, ESLint, autolinking Expo e fluxo de preview 390×844 validados; relatórios em `test_reports/iteration_1.json` e `iteration_2.json`.
+- **2026-09-17:** correção do `build.gradle` do módulo local `v6-media-tts` (adicionado `defaultConfig{versionCode/versionName}` e bloco `publishing{singleVariant('release'){withSourcesJar()}}`) para resolver a falha do EAS: `versionName is not defined` + `SoftwareComponent with name 'release' not found`. Regressão JS validada em `test_reports/iteration_3.json`.
 
 ## Prioritized backlog
 
