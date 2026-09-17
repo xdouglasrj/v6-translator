@@ -48,10 +48,18 @@ import {
   startCapture,
   stopCapture,
 } from "@/src/openai";
+import {
+  createInterpreter,
+  DEFAULT_CONFIG,
+  type InterpreterSnapshot,
+} from "@/src/realtime";
+import { storage } from "@/src/utils/storage";
 import { makeStyles, useTheme } from "@/src/theme";
 
 type LogItem = { id: string; time: string; text: string; tone?: "accent" | "good" | "warn" };
 type Screen = "test" | "diagnostics";
+
+const F4_STORAGE_KEY = "fase4_config";
 
 const initialSnapshot: AudioSnapshot = {
   available: false,
@@ -85,6 +93,29 @@ export default function Index() {
   const [keyInput, setKeyInput] = useState("");
   const [keySaving, setKeySaving] = useState(false);
   const pipelineAbort = useRef(false);
+
+  const [f4ServerUrl, setF4ServerUrl] = useState(DEFAULT_CONFIG.serverUrl);
+  const [f4MyName, setF4MyName] = useState(DEFAULT_CONFIG.myName);
+  const [f4MyLanguage, setF4MyLanguage] = useState(DEFAULT_CONFIG.myLanguage);
+  const [f4TouristName, setF4TouristName] = useState(DEFAULT_CONFIG.touristName);
+  const [f4TouristLanguage, setF4TouristLanguage] = useState(DEFAULT_CONFIG.touristLanguage);
+  const [f4Snapshot, setF4Snapshot] = useState<InterpreterSnapshot>({
+    state: "DESCONECTADO",
+    lastSpeech: "",
+    lastInterpretation: "",
+    timings: {
+      speechStartedAt: null,
+      speechEndedAt: null,
+      responseCreatedAt: null,
+      firstAudioReceivedAt: null,
+      firstAudioPlayedAt: null,
+      responseDoneAt: null,
+    },
+    latencyMs: null,
+    error: null,
+    attempts: 0,
+  });
+  const interpreterRef = useRef<ReturnType<typeof createInterpreter> | null>(null);
 
   const addLog = useCallback((text: string, tone?: LogItem["tone"]) => {
     const now = new Date();
@@ -128,6 +159,21 @@ export default function Index() {
       if (key) {
         setApiKeyState(key);
         setApiKeyMasked(maskKey(key));
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    void storage.getItem(F4_STORAGE_KEY, "").then((raw) => {
+      if (raw && typeof raw === "string") {
+        try {
+          const cfg = JSON.parse(raw) as Partial<typeof DEFAULT_CONFIG>;
+          if (cfg.serverUrl) setF4ServerUrl(cfg.serverUrl);
+          if (cfg.myName) setF4MyName(cfg.myName);
+          if (cfg.myLanguage) setF4MyLanguage(cfg.myLanguage);
+          if (cfg.touristName) setF4TouristName(cfg.touristName);
+          if (cfg.touristLanguage) setF4TouristLanguage(cfg.touristLanguage);
+        } catch { /* ignore */ }
       }
     });
   }, []);
@@ -300,6 +346,43 @@ export default function Index() {
     await stopMicPlayback().catch(() => {});
     setMicPlaying(false);
     addLog("Reprodução da gravação interrompida", "warn");
+  };
+
+  const handleSaveF4Config = async () => {
+    const cfg = { serverUrl: f4ServerUrl, myName: f4MyName, myLanguage: f4MyLanguage, touristName: f4TouristName, touristLanguage: f4TouristLanguage };
+    await storage.setItem(F4_STORAGE_KEY, JSON.stringify(cfg));
+    interpreterRef.current?.setConfig(cfg);
+    addLog("Configuração do intérprete salva", "good");
+  };
+
+  const handleF4Connect = async () => {
+    await handleSaveF4Config();
+    const interp = createInterpreter();
+    interpreterRef.current = interp;
+    interp.setConfig({ serverUrl: f4ServerUrl, myName: f4MyName, myLanguage: f4MyLanguage, touristName: f4TouristName, touristLanguage: f4TouristLanguage });
+    interp.setListener((snap) => {
+      setF4Snapshot(snap);
+      if (snap.state === "ERRO" && snap.error) {
+        addLog(`Intérprete: ${snap.error}`, "warn");
+      }
+      if (snap.state === "OUVINDO") {
+        addLog("Intérprete ouvindo...", "good");
+      }
+      if (snap.state === "IA_FALANDO") {
+        addLog("IA interpretando...", "accent");
+      }
+      if (snap.timings.responseDoneAt && snap.timings.speechEndedAt && snap.timings.firstAudioPlayedAt) {
+        const ms = snap.timings.firstAudioPlayedAt - snap.timings.speechEndedAt;
+        addLog(`Fala encerrada → primeiro áudio tocado: ${ms}ms`, "accent");
+      }
+    });
+    await interp.connect();
+  };
+
+  const handleF4Disconnect = async () => {
+    await interpreterRef.current?.disconnect();
+    interpreterRef.current = null;
+    addLog("Intérprete encerrado", "warn");
   };
 
   const canPtt = apiKey && pipeline.phase === "PRONTO" && isNativeMediaTtsAvailable;
@@ -507,6 +590,19 @@ export default function Index() {
               onPttPressIn={handlePttPressIn}
               onPttPressOut={handlePttPressOut}
               canPtt={!!canPtt}
+              f4ServerUrl={f4ServerUrl}
+              f4MyName={f4MyName}
+              f4MyLanguage={f4MyLanguage}
+              f4TouristName={f4TouristName}
+              f4TouristLanguage={f4TouristLanguage}
+              f4Snapshot={f4Snapshot}
+              onF4ServerUrlChange={setF4ServerUrl}
+              onF4MyNameChange={setF4MyName}
+              onF4MyLanguageChange={setF4MyLanguage}
+              onF4TouristNameChange={setF4TouristName}
+              onF4TouristLanguageChange={setF4TouristLanguage}
+              onF4Connect={handleF4Connect}
+              onF4Disconnect={handleF4Disconnect}
             />
           ) : (
             <DiagnosticsScreen
@@ -605,6 +701,19 @@ function TestScreen({
   onPttPressIn,
   onPttPressOut,
   canPtt,
+  f4ServerUrl,
+  f4MyName,
+  f4MyLanguage,
+  f4TouristName,
+  f4TouristLanguage,
+  f4Snapshot,
+  onF4ServerUrlChange,
+  onF4MyNameChange,
+  onF4MyLanguageChange,
+  onF4TouristNameChange,
+  onF4TouristLanguageChange,
+  onF4Connect,
+  onF4Disconnect,
 }: {
   snapshot: AudioSnapshot;
   loading: boolean;
@@ -635,6 +744,19 @@ function TestScreen({
   onPttPressIn: () => void;
   onPttPressOut: () => void;
   canPtt: boolean;
+  f4ServerUrl: string;
+  f4MyName: string;
+  f4MyLanguage: string;
+  f4TouristName: string;
+  f4TouristLanguage: string;
+  f4Snapshot: InterpreterSnapshot;
+  onF4ServerUrlChange: (v: string) => void;
+  onF4MyNameChange: (v: string) => void;
+  onF4MyLanguageChange: (v: string) => void;
+  onF4TouristNameChange: (v: string) => void;
+  onF4TouristLanguageChange: (v: string) => void;
+  onF4Connect: () => void;
+  onF4Disconnect: () => void;
 }) {
   const { colors } = useTheme();
   return (
@@ -864,6 +986,128 @@ function TestScreen({
             </Text>
           </Pressable>
         </View>
+      )}
+
+      <View style={[styles.sectionHeading, { marginTop: 28 }]}>
+        <Text style={styles.sectionTitle}>FASE 4 · IA INTÉRPRETE</Text>
+        <Text style={styles.sectionSubtitle}>Conversa presencial com interpretação em tempo real.</Text>
+      </View>
+
+      {Platform.OS === "web" || !isNativeMediaTtsAvailable ? (
+        <View style={styles.diagnosticCard}>
+          <Text style={styles.metricValue}>Disponível só no APK Android</Text>
+        </View>
+      ) : (
+        <>
+          <View style={styles.diagnosticCard}>
+            <View style={styles.metricRow}>
+              <Text style={styles.metricLabel}>SERVIDOR</Text>
+              <TextInput
+                style={{ color: colors.onSurface, fontSize: 13, flex: 1, textAlign: "right" }}
+                value={f4ServerUrl}
+                onChangeText={onF4ServerUrlChange}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+            </View>
+            <View style={styles.metricRow}>
+              <Text style={styles.metricLabel}>MEU NOME</Text>
+              <TextInput
+                style={{ color: colors.onSurface, fontSize: 13, flex: 1, textAlign: "right" }}
+                value={f4MyName}
+                onChangeText={onF4MyNameChange}
+              />
+            </View>
+            <View style={styles.metricRow}>
+              <Text style={styles.metricLabel}>MEU IDIOMA</Text>
+              <TextInput
+                style={{ color: colors.onSurface, fontSize: 13, flex: 1, textAlign: "right" }}
+                value={f4MyLanguage}
+                onChangeText={onF4MyLanguageChange}
+              />
+            </View>
+            <View style={styles.metricRow}>
+              <Text style={styles.metricLabel}>TURISTA</Text>
+              <TextInput
+                style={{ color: colors.onSurface, fontSize: 13, flex: 1, textAlign: "right" }}
+                value={f4TouristName}
+                onChangeText={onF4TouristNameChange}
+              />
+            </View>
+            <View style={[styles.metricRow, { borderBottomWidth: 0 }]}>
+              <Text style={styles.metricLabel}>IDIOMA TURISTA</Text>
+              <TextInput
+                style={{ color: colors.onSurface, fontSize: 13, flex: 1, textAlign: "right" }}
+                value={f4TouristLanguage}
+                onChangeText={onF4TouristLanguageChange}
+              />
+            </View>
+          </View>
+
+          <View style={styles.diagnosticCard}>
+            <View style={styles.metricRow}>
+              <Text style={styles.metricLabel}>ESTADO</Text>
+              <Text style={[styles.metricValue, f4Snapshot.state === "ERRO" ? { color: colors.error } : f4Snapshot.state === "DESCONECTADO" ? { color: colors.muted } : { color: colors.success }]}>
+                {f4Snapshot.state === "DESCONECTADO" ? "DESCONECTADO" : f4Snapshot.state === "CONECTANDO" ? "CONECTANDO..." : f4Snapshot.state === "OUVINDO" ? "OUVINDO" : f4Snapshot.state === "PESSOA_FALANDO" ? "PESSOA FALANDO" : f4Snapshot.state === "INTERPRETANDO" ? "INTERPRETANDO..." : f4Snapshot.state === "IA_FALANDO" ? "IA FALANDO" : "ERRO"}
+              </Text>
+            </View>
+            {f4Snapshot.error ? (
+              <View style={[styles.metricRow, { borderBottomWidth: 0 }]}>
+                <Text style={styles.metricLabel}>ERRO</Text>
+                <Text style={[styles.metricValue, { color: colors.error }]} numberOfLines={2}>{f4Snapshot.error}</Text>
+              </View>
+            ) : null}
+          </View>
+
+          {f4Snapshot.lastSpeech ? (
+            <View style={styles.diagnosticCard}>
+              <View style={[styles.metricRow, { borderBottomWidth: 0 }]}>
+                <Text style={styles.metricLabel}>ÚLTIMA FALA</Text>
+                <Text style={styles.metricValue} numberOfLines={3}>{f4Snapshot.lastSpeech}</Text>
+              </View>
+            </View>
+          ) : null}
+
+          {f4Snapshot.lastInterpretation ? (
+            <View style={styles.diagnosticCard}>
+              <View style={[styles.metricRow, { borderBottomWidth: 0 }]}>
+                <Text style={styles.metricLabel}>INTERPRETAÇÃO</Text>
+                <Text style={[styles.metricValue, { color: colors.brandPrimary }]} numberOfLines={3}>{f4Snapshot.lastInterpretation}</Text>
+              </View>
+            </View>
+          ) : null}
+
+          {f4Snapshot.latencyMs !== null ? (
+            <View style={styles.diagnosticCard}>
+              <View style={[styles.metricRow, { borderBottomWidth: 0 }]}>
+                <Text style={styles.metricLabel}>TEMPO ATÉ A VOZ</Text>
+                <Text style={[styles.metricValue, { color: colors.brandPrimary }]}>{f4Snapshot.latencyMs}ms</Text>
+              </View>
+            </View>
+          ) : null}
+
+          <View style={styles.actionStack}>
+            {f4Snapshot.state === "DESCONECTADO" || f4Snapshot.state === "ERRO" ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={onF4Connect}
+                style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed]}
+              >
+                <MaterialCommunityIcons name="connection" size={24} color={colors.onBrandPrimary} />
+                <Text style={styles.primaryButtonText}>CONECTAR INTÉRPRETE</Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                accessibilityRole="button"
+                onPress={onF4Disconnect}
+                style={({ pressed }) => [styles.primaryButton, { backgroundColor: colors.error }, pressed && styles.buttonPressed]}
+              >
+                <MaterialCommunityIcons name="connection" size={24} color={colors.onError} />
+                <Text style={[styles.primaryButtonText, { color: colors.onError }]}>ENCERRAR</Text>
+              </Pressable>
+            )}
+          </View>
+        </>
       )}
     </View>
   );

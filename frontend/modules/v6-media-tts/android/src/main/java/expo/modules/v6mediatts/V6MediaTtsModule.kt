@@ -3,7 +3,10 @@ package expo.modules.v6mediatts
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
+import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioRecord
+import android.media.AudioTrack
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.os.Build
@@ -18,6 +21,7 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
 import java.util.Locale
 import java.util.UUID
+import android.util.Base64
 
 class V6MediaTtsModule : Module() {
   private var textToSpeech: TextToSpeech? = null
@@ -43,12 +47,20 @@ class V6MediaTtsModule : Module() {
   private var freeRecordingStartedAt = 0L
   private var freeRecordingFile: File? = null
 
+  private var streamCaptureThread: Thread? = null
+  private var streamAudioRecord: AudioRecord? = null
+  @Volatile private var captureMuted = false
+  @Volatile private var captureRunning = false
+  private var streamAudioTrack: AudioTrack? = null
+  private var streamBytesWritten = 0L
+  private var streamFirstChunkSent = false
+
   private val audioManager: AudioManager?
     get() = appContext.reactContext?.getSystemService(AudioManager::class.java)
 
   override fun definition() = ModuleDefinition {
     Name("V6MediaTts")
-    Events("onSpeechStart", "onSpeechDone", "onSpeechError", "onRecordingStop", "onFreeRecordingStop", "onPlaybackStart", "onPlaybackStop", "onRouteChange")
+    Events("onSpeechStart", "onSpeechDone", "onSpeechError", "onRecordingStop", "onFreeRecordingStop", "onPlaybackStart", "onPlaybackStop", "onRouteChange", "onAudioChunk", "onStreamFirstAudio", "onStreamPlaybackStop")
 
     OnCreate {
       val context = appContext.reactContext ?: return@OnCreate
@@ -99,6 +111,8 @@ class V6MediaTtsModule : Module() {
       stopRecordingInternal()
       stopFreeRecordingInternal()
       stopPlaybackInternal()
+      stopStreamCaptureInternal()
+      stopStreamPlaybackInternal()
     }
 
     OnActivityEntersBackground {
@@ -106,6 +120,12 @@ class V6MediaTtsModule : Module() {
         val file = File(appContext.reactContext?.cacheDir ?: return@OnActivityEntersBackground, "fase2-teste.m4a")
         stopRecordingInternal()
         if (file.exists()) file.delete()
+      }
+      if (captureRunning) {
+        stopStreamCaptureInternal()
+      }
+      if (streamAudioTrack != null) {
+        stopStreamPlaybackInternal()
       }
     }
 
@@ -520,6 +540,177 @@ class V6MediaTtsModule : Module() {
         promise.reject("SAVE_FAILED", "Falha ao salvar áudio: ${e.message}", null)
       }
     }
+
+    AsyncFunction("startStreamCapture") { promise: Promise ->
+      val context = appContext.reactContext
+      if (context == null) {
+        promise.reject("NO_CONTEXT", "Contexto Android indisponível.", null)
+        return@AsyncFunction
+      }
+      if (captureRunning) {
+        promise.reject("ALREADY_CAPTURING", "Captura de áudio já em andamento.", null)
+        return@AsyncFunction
+      }
+      val sampleRate = 24000
+      val channelConfig = AudioFormat.CHANNEL_IN_MONO
+      val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+      val minBuf = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+      val bufferSize = maxOf(minBuf, sampleRate * 2 / 10)
+      try {
+        val recorder = AudioRecord.Builder()
+          .setAudioSource(MediaRecorder.AudioSource.MIC)
+          .setAudioFormat(
+            AudioFormat.Builder()
+              .setSampleRate(sampleRate)
+              .setChannelMask(channelConfig)
+              .setEncoding(audioFormat)
+              .build()
+          )
+          .setBufferSizeInBytes(bufferSize)
+          .build()
+        val inputs = audioManager?.getDevices(AudioManager.GET_DEVICES_INPUTS) ?: emptyArray()
+        val builtInMic = inputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+        if (builtInMic != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+          recorder.setPreferredDevice(builtInMic)
+        }
+        streamAudioRecord = recorder
+        captureRunning = true
+        captureMuted = false
+        recorder.startRecording()
+        val routedInput = try {
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            recorder.routedDevice?.productName?.toString() ?: "indisponível"
+          } else "indisponível"
+        } catch (_: Exception) { "indisponível" }
+        val thread = Thread({
+          val buf = ByteArray(bufferSize)
+          while (captureRunning) {
+            val read = recorder.read(buf, 0, buf.size)
+            if (read > 0 && captureRunning && !captureMuted) {
+              val chunk = Base64.encodeToString(buf.copyOf(read), Base64.NO_WRAP)
+              sendEvent("onAudioChunk", mapOf("base64" to chunk))
+            }
+          }
+        }, "v6-stream-capture")
+        thread.start()
+        streamCaptureThread = thread
+        promise.resolve(mapOf(
+          "sampleRate" to sampleRate,
+          "bufferBytes" to bufferSize,
+          "routedInput" to routedInput,
+          "mode" to modeLabel(audioManager?.mode ?: AudioManager.MODE_NORMAL)
+        ))
+      } catch (e: Exception) {
+        captureRunning = false
+        streamAudioRecord?.release()
+        streamAudioRecord = null
+        promise.reject("CAPTURE_FAILED", "Falha ao iniciar captura de áudio: ${e.message}", null)
+      }
+    }
+
+    AsyncFunction("stopStreamCapture") { promise: Promise ->
+      stopStreamCaptureInternal()
+      promise.resolve(null)
+    }
+
+    AsyncFunction("setCaptureMuted") { muted: Boolean, promise: Promise ->
+      captureMuted = muted
+      promise.resolve(null)
+    }
+
+    AsyncFunction("startStreamPlayback") { promise: Promise ->
+      val context = appContext.reactContext
+      if (context == null) {
+        promise.reject("NO_CONTEXT", "Contexto Android indisponível.", null)
+        return@AsyncFunction
+      }
+      if (streamAudioTrack != null) {
+        promise.reject("ALREADY_PLAYING", "Reprodução em fluxo já em andamento.", null)
+        return@AsyncFunction
+      }
+      val sampleRate = 24000
+      val channelConfig = AudioFormat.CHANNEL_OUT_MONO
+      val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+      val minBuf = AudioTrack.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+      val bufferSize = maxOf(minBuf, sampleRate * 2 / 10)
+      val manager = audioManager
+      val attrs = AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_MEDIA)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+        .build()
+      val focusResult = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+          .setAudioAttributes(attrs)
+          .build()
+        audioFocusRequest = request
+        manager?.requestAudioFocus(request) ?: AudioManager.AUDIOFOCUS_REQUEST_FAILED
+      } else {
+        @Suppress("DEPRECATION")
+        manager?.requestAudioFocus(
+          legacyFocusListener,
+          AudioManager.STREAM_MUSIC,
+          AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+        ) ?: AudioManager.AUDIOFOCUS_REQUEST_FAILED
+      }
+      audioFocusGranted = focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+      if (!audioFocusGranted) {
+        promise.reject("FOCUS_DENIED", "Foco de áudio negado.", null)
+        return@AsyncFunction
+      }
+      try {
+        val track = AudioTrack.Builder()
+          .setAudioAttributes(attrs)
+          .setAudioFormat(
+            AudioFormat.Builder()
+              .setSampleRate(sampleRate)
+              .setChannelMask(channelConfig)
+              .setEncoding(audioFormat)
+              .build()
+          )
+          .setBufferSizeInBytes(bufferSize)
+          .setTransferMode(AudioTrack.MODE_STREAM)
+          .build()
+        streamAudioTrack = track
+        streamBytesWritten = 0
+        streamFirstChunkSent = false
+        val outputs = manager?.getDevices(AudioManager.GET_DEVICES_OUTPUTS) ?: emptyArray()
+        val outputList = outputs.map { "${deviceTypeName(it.type)}:${it.productName}" }
+        promise.resolve(mapOf(
+          "sampleRate" to sampleRate,
+          "bufferBytes" to bufferSize,
+          "outputs" to outputList
+        ))
+      } catch (e: Exception) {
+        abandonAudioFocus()
+        promise.reject("PLAYBACK_FAILED", "Falha ao iniciar reprodução em fluxo: ${e.message}", null)
+      }
+    }
+
+    AsyncFunction("writeStreamChunk") { base64: String, promise: Promise ->
+      val track = streamAudioTrack
+      if (track == null) {
+        promise.reject("NOT_PLAYING", "Nenhuma reprodução em fluxo ativa.", null)
+        return@AsyncFunction
+      }
+      try {
+        val bytes = Base64.decode(base64, Base64.DEFAULT)
+        if (!streamFirstChunkSent) {
+          streamFirstChunkSent = true
+          track.play()
+          sendEvent("onStreamFirstAudio", mapOf("time" to System.currentTimeMillis()))
+        }
+        track.write(bytes, 0, bytes.size)
+        streamBytesWritten += bytes.size
+        promise.resolve(null)
+      } catch (e: Exception) {
+        promise.reject("WRITE_FAILED", "Falha ao escrever áudio: ${e.message}", null)
+      }
+    }
+
+    AsyncFunction("stopStreamPlayback") { promise: Promise ->
+      stopStreamPlaybackInternal()
+      promise.resolve(null)
+    }
   }
 
   private val progressListener = object : UtteranceProgressListener() {
@@ -657,6 +848,36 @@ class V6MediaTtsModule : Module() {
     }
     audioFocusGranted = false
     audioFocusRequest = null
+  }
+
+  private fun stopStreamCaptureInternal() {
+    captureRunning = false
+    try {
+      streamCaptureThread?.join(500)
+    } catch (_: InterruptedException) {}
+    streamCaptureThread = null
+    try {
+      streamAudioRecord?.stop()
+    } catch (_: Exception) {}
+    try {
+      streamAudioRecord?.release()
+    } catch (_: Exception) {}
+    streamAudioRecord = null
+  }
+
+  private fun stopStreamPlaybackInternal() {
+    val track = streamAudioTrack ?: return
+    try {
+      track.pause()
+      track.flush()
+      track.stop()
+      track.release()
+    } catch (_: Exception) {}
+    streamAudioTrack = null
+    streamBytesWritten = 0
+    streamFirstChunkSent = false
+    abandonAudioFocus()
+    sendEvent("onStreamPlaybackStop", mapOf("time" to System.currentTimeMillis()))
   }
 
   private fun sendRouteChangeEvent() {
