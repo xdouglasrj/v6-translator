@@ -57,9 +57,7 @@ export function openSession(
   const wsUrl = `wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1`;
   const protocol1 = "realtime";
   const protocol2 = `openai-insecure-api-key.${clientSecret}`;
-  const protocol3 = "openai-beta.realtime-v1";
-
-  const ws = new WebSocket(wsUrl, [protocol1, protocol2, protocol3]);
+  const ws = new WebSocket(wsUrl, [protocol1, protocol2]);
 
   const session: RealtimeSession = {
     send: (msg) => {
