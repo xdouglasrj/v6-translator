@@ -2,14 +2,20 @@ package expo.modules.v6mediatts
 
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
+import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.media.MediaPlayer
+import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import java.io.File
 import java.util.Locale
 import java.util.UUID
 
@@ -19,12 +25,25 @@ class V6MediaTtsModule : Module() {
   private val preparePromises = mutableListOf<Promise>()
   private val speechPromises = mutableMapOf<String, Promise>()
 
+  private var mediaRecorder: MediaRecorder? = null
+  private var isRecording = false
+  private var mediaPlayer: MediaPlayer? = null
+  private var isPlaying = false
+  private var audioFocusGranted = false
+  private var audioFocusRequest: AudioFocusRequest? = null
+  private var audioDeviceCallback: android.media.AudioDeviceCallback? = null
+  // ponytail: legacy API 25 listener, abandon with abandonAudioFocus()
+  @Suppress("DEPRECATION")
+  private val legacyFocusListener = AudioManager.OnAudioFocusChangeListener { }
+  private var recordingStartedAt = 0L
+  private var lastRoute: String? = null
+
   private val audioManager: AudioManager?
     get() = appContext.reactContext?.getSystemService(AudioManager::class.java)
 
   override fun definition() = ModuleDefinition {
     Name("V6MediaTts")
-    Events("onSpeechStart", "onSpeechDone", "onSpeechError")
+    Events("onSpeechStart", "onSpeechDone", "onSpeechError", "onRecordingStop", "onPlaybackStart", "onPlaybackStop", "onRouteChange")
 
     OnCreate {
       val context = appContext.reactContext ?: return@OnCreate
@@ -45,6 +64,22 @@ class V6MediaTtsModule : Module() {
         }
         preparePromises.clear()
       }
+
+      audioDeviceCallback = object : android.media.AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+          sendRouteChangeEvent()
+        }
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+          sendRouteChangeEvent()
+        }
+      }
+      audioManager?.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
+      // Fix #5: initialize lastRoute with current output
+      val outputs = audioManager?.getDevices(AudioManager.GET_DEVICES_OUTPUTS) ?: emptyArray()
+      val initialOutput = outputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+        || it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+        || it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+      lastRoute = initialOutput?.productName?.toString() ?: "desconhecido"
     }
 
     OnDestroy {
@@ -53,6 +88,19 @@ class V6MediaTtsModule : Module() {
       textToSpeech = null
       isReady = false
       speechPromises.clear()
+
+      audioDeviceCallback?.let { audioManager?.unregisterAudioDeviceCallback(it) }
+      audioDeviceCallback = null
+      stopRecordingInternal()
+      stopPlaybackInternal()
+    }
+
+    OnActivityEntersBackground {
+      if (isRecording) {
+        val file = File(appContext.reactContext?.cacheDir ?: return@OnActivityEntersBackground, "fase2-teste.m4a")
+        stopRecordingInternal()
+        if (file.exists()) file.delete()
+      }
     }
 
     AsyncFunction("prepare") { promise: Promise ->
@@ -92,6 +140,185 @@ class V6MediaTtsModule : Module() {
 
     AsyncFunction("getAudioSnapshot") {
       snapshotAudio()
+    }
+
+    AsyncFunction("startRecording") { promise: Promise ->
+      val context = appContext.reactContext
+      if (context == null) {
+        promise.reject("NO_CONTEXT", "Contexto Android indisponível.", null)
+        return@AsyncFunction
+      }
+      if (isRecording) {
+        promise.reject("ALREADY_RECORDING", "Gravação já em andamento.", null)
+        return@AsyncFunction
+      }
+      if (isPlaying) {
+        stopPlaybackInternal()
+      }
+      try {
+        val file = File(context.cacheDir, "fase2-teste.m4a")
+        if (file.exists()) file.delete()
+
+        val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+          MediaRecorder(context)
+        } else {
+          @Suppress("DEPRECATION")
+          MediaRecorder()
+        }
+
+        recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+        recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+        recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+        recorder.setMaxDuration(5000)
+        recorder.setOutputFile(file.absolutePath)
+
+        recorder.setOnInfoListener { _, what, _ ->
+          if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
+            finishRecording()
+          }
+        }
+
+        val inputs = audioManager?.getDevices(AudioManager.GET_DEVICES_INPUTS) ?: emptyArray()
+        val builtInMic = inputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+        if (builtInMic != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+          recorder.setPreferredDevice(builtInMic)
+        }
+
+        recorder.prepare()
+        recorder.start()
+        mediaRecorder = recorder
+        isRecording = true
+        recordingStartedAt = System.currentTimeMillis()
+
+        val outputs = audioManager?.getDevices(AudioManager.GET_DEVICES_OUTPUTS) ?: emptyArray()
+        val inputList = inputs.map { "${deviceTypeName(it.type)}:${it.productName}" }
+        val outputList = outputs.map { "${deviceTypeName(it.type)}:${it.productName}" }
+
+        val routedInput = try {
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            recorder.routedDevice?.productName?.toString() ?: "indisponível"
+          } else "indisponível"
+        } catch (_: Exception) { "indisponível" }
+
+        promise.resolve(mapOf(
+          "mode" to modeLabel(audioManager?.mode ?: AudioManager.MODE_NORMAL),
+          "inputs" to inputList,
+          "outputs" to outputList,
+          "scoActive" to (audioManager?.isBluetoothScoOn == true),
+          "routedInput" to routedInput,
+          "builtInMicFound" to (builtInMic != null)
+        ))
+      } catch (e: Exception) {
+        promise.reject("RECORD_FAILED", "Falha ao iniciar gravação: ${e.message}", null)
+      }
+    }
+
+    AsyncFunction("stopRecording") { promise: Promise ->
+      if (!isRecording) {
+        promise.reject("NOT_RECORDING", "Nenhuma gravação em andamento.", null)
+        return@AsyncFunction
+      }
+      val context = appContext.reactContext
+      if (context == null) {
+        promise.reject("NO_CONTEXT", "Contexto Android indisponível.", null)
+        return@AsyncFunction
+      }
+      finishRecording()
+      promise.resolve(null)
+    }
+
+    AsyncFunction("startPlayback") { promise: Promise ->
+      val context = appContext.reactContext
+      if (context == null) {
+        promise.reject("NO_CONTEXT", "Contexto Android indisponível.", null)
+        return@AsyncFunction
+      }
+      if (isPlaying) {
+        promise.reject("ALREADY_PLAYING", "Reprodução já em andamento.", null)
+        return@AsyncFunction
+      }
+      if (isRecording) {
+        promise.reject("RECORDING_ACTIVE", "Pare a gravação antes de reproduzir.", null)
+        return@AsyncFunction
+      }
+      val file = File(context.cacheDir, "fase2-teste.m4a")
+      if (!file.exists()) {
+        promise.reject("NO_FILE", "Nenhuma gravação encontrada.", null)
+        return@AsyncFunction
+      }
+
+      val manager = audioManager
+      val focusResult = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val attrs = AudioAttributes.Builder()
+          .setUsage(AudioAttributes.USAGE_MEDIA)
+          .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+          .build()
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+          .setAudioAttributes(attrs)
+          .build()
+        audioFocusRequest = request
+        manager?.requestAudioFocus(request) ?: AudioManager.AUDIOFOCUS_REQUEST_FAILED
+      } else {
+        @Suppress("DEPRECATION")
+        manager?.requestAudioFocus(
+          legacyFocusListener,
+          AudioManager.STREAM_MUSIC,
+          AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+        ) ?: AudioManager.AUDIOFOCUS_REQUEST_FAILED
+      }
+
+      audioFocusGranted = focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+      if (!audioFocusGranted) {
+        promise.reject("FOCUS_DENIED", "Foco de áudio negado.", null)
+        return@AsyncFunction
+      }
+
+      try {
+        val player = MediaPlayer()
+        val attrs = AudioAttributes.Builder()
+          .setUsage(AudioAttributes.USAGE_MEDIA)
+          .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+          .build()
+        player.setAudioAttributes(attrs)
+        player.setDataSource(file.absolutePath)
+        player.setOnPreparedListener {
+          isPlaying = true
+          sendEvent("onPlaybackStart", mapOf("time" to System.currentTimeMillis()))
+          it.start()
+        }
+        player.setOnCompletionListener {
+          sendEvent("onPlaybackStop", mapOf("time" to System.currentTimeMillis()))
+          stopPlaybackInternal()
+        }
+        player.setOnErrorListener { _, _, _ ->
+          stopPlaybackInternal()
+          false
+        }
+        player.prepareAsync()
+        mediaPlayer = player
+
+        val outputs = manager?.getDevices(AudioManager.GET_DEVICES_OUTPUTS) ?: emptyArray()
+        val outputList = outputs.map { "${deviceTypeName(it.type)}:${it.productName}" }
+        promise.resolve(mapOf(
+          "mode" to modeLabel(manager?.mode ?: AudioManager.MODE_NORMAL),
+          "outputs" to outputList,
+          "usage" to "USAGE_MEDIA",
+          "contentType" to "CONTENT_TYPE_SPEECH",
+          "focus" to "concedido"
+        ))
+      } catch (e: Exception) {
+        abandonAudioFocus()
+        promise.reject("PLAYBACK_FAILED", "Falha ao iniciar reprodução: ${e.message}", null)
+      }
+    }
+
+    AsyncFunction("stopPlayback") { promise: Promise ->
+      if (!isPlaying) {
+        promise.reject("NOT_PLAYING", "Nenhuma reprodução em andamento.", null)
+        return@AsyncFunction
+      }
+      stopPlaybackInternal()
+      promise.resolve(null)
     }
   }
 
@@ -153,5 +380,88 @@ class V6MediaTtsModule : Module() {
     AudioManager.MODE_IN_CALL -> "MODE_IN_CALL"
     AudioManager.MODE_IN_COMMUNICATION -> "MODE_IN_COMMUNICATION"
     else -> "MODE_$mode"
+  }
+
+  private fun deviceTypeName(type: Int): String = when (type) {
+    AudioDeviceInfo.TYPE_BUILTIN_MIC -> "BUILTIN_MIC"
+    AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "BUILTIN_SPEAKER"
+    AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "BUILTIN_EARPIECE"
+    AudioDeviceInfo.TYPE_WIRED_HEADSET -> "WIRED_HEADSET"
+    AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "WIRED_HEADPHONES"
+    AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "BT_SCO"
+    AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "BT_A2DP"
+    AudioDeviceInfo.TYPE_USB_DEVICE -> "USB_DEVICE"
+    AudioDeviceInfo.TYPE_USB_HEADSET -> "USB_HEADSET"
+    else -> "TYPE_$type"
+  }
+
+  private fun stopRecordingInternal() {
+    if (!isRecording) return
+    try {
+      mediaRecorder?.stop()
+    } catch (_: Exception) {
+      val file = File(appContext.reactContext?.cacheDir ?: return, "fase2-teste.m4a")
+      if (file.exists()) file.delete()
+    } finally {
+      try { mediaRecorder?.release() } catch (_: Exception) {}
+      mediaRecorder = null
+      isRecording = false
+    }
+  }
+
+  private fun finishRecording() {
+    if (!isRecording) return
+    val durationMs = System.currentTimeMillis() - recordingStartedAt
+    val file = File(appContext.reactContext?.cacheDir ?: return, "fase2-teste.m4a")
+    stopRecordingInternal()
+    val bytes = if (file.exists()) file.length() else 0L
+    val outputs = audioManager?.getDevices(AudioManager.GET_DEVICES_OUTPUTS) ?: emptyArray()
+    val outputList = outputs.map { "${deviceTypeName(it.type)}:${it.productName}" }
+    sendEvent("onRecordingStop", mapOf(
+      "path" to file.absolutePath,
+      "bytes" to bytes,
+      "durationMs" to durationMs,
+      "mode" to modeLabel(audioManager?.mode ?: AudioManager.MODE_NORMAL),
+      "outputs" to outputList
+    ))
+  }
+
+  private fun stopPlaybackInternal() {
+    try {
+      mediaPlayer?.stop()
+      mediaPlayer?.reset()
+      mediaPlayer?.release()
+    } catch (_: Exception) {}
+    mediaPlayer = null
+    isPlaying = false
+    abandonAudioFocus()
+  }
+
+  private fun abandonAudioFocus() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      audioFocusRequest?.let { audioManager?.abandonAudioFocusRequest(it) }
+    } else {
+      @Suppress("DEPRECATION")
+      audioManager?.abandonAudioFocus(legacyFocusListener)
+    }
+    audioFocusGranted = false
+    audioFocusRequest = null
+  }
+
+  private fun sendRouteChangeEvent() {
+    val manager = audioManager ?: return
+    val outputs = manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+    val currentOutput = outputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+      || it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+      || it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+    val currentName = currentOutput?.productName?.toString() ?: "desconhecido"
+    if (currentName == lastRoute) return
+    val before = lastRoute ?: "desconhecido"
+    lastRoute = currentName
+    sendEvent("onRouteChange", mapOf(
+      "before" to before,
+      "after" to currentName,
+      "time" to System.currentTimeMillis()
+    ))
   }
 }

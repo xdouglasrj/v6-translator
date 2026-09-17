@@ -10,6 +10,10 @@ type NativeMediaTts = {
   speak: (text: string, languageTag: string) => Promise<void>;
   stop: () => Promise<void>;
   getAudioSnapshot: () => Promise<AudioSnapshot>;
+  startRecording: () => Promise<RecordingStartResult>;
+  stopRecording: () => Promise<void>;
+  startPlayback: () => Promise<PlaybackStartResult>;
+  stopPlayback: () => Promise<void>;
   addListener?: (event: string, listener: () => void) => { remove: () => void };
 };
 
@@ -77,4 +81,63 @@ export async function getAudioSnapshot(): Promise<AudioSnapshot> {
     mediaActive: false,
     reason: Platform.OS === "web" ? "A rota Bluetooth aparece no APK Android." : "Módulo nativo indisponível",
   };
+}
+
+export type RecordingStartResult = {
+  mode: string;
+  inputs: string[];
+  outputs: string[];
+  scoActive: boolean;
+  routedInput: string;
+  builtInMicFound: boolean;
+};
+
+export type PlaybackStartResult = {
+  mode: string;
+  outputs: string[];
+  usage: string;
+  contentType: string;
+  focus: string;
+};
+
+export type RecordingStopEvent = {
+  path: string;
+  bytes: number;
+  durationMs: number;
+  mode: string;
+  outputs: string[];
+};
+
+export type RouteChangeEvent = {
+  before: string;
+  after: string;
+  time: number;
+};
+
+export async function startMicRecording(): Promise<RecordingStartResult> {
+  if (nativeTts) return nativeTts.startRecording();
+  throw new Error("Módulo nativo indisponível. Disponível só no APK Android.");
+}
+
+export async function stopMicRecording(): Promise<void> {
+  if (nativeTts) return nativeTts.stopRecording();
+  throw new Error("Módulo nativo indisponível.");
+}
+
+export async function startMicPlayback(): Promise<PlaybackStartResult> {
+  if (nativeTts) return nativeTts.startPlayback();
+  throw new Error("Módulo nativo indisponível. Disponível só no APK Android.");
+}
+
+export async function stopMicPlayback(): Promise<void> {
+  if (nativeTts) return nativeTts.stopPlayback();
+  throw new Error("Módulo nativo indisponível.");
+}
+
+export function addMicListener(
+  event: string,
+  listener: (...args: unknown[]) => void,
+): { remove: () => void } {
+  if (nativeTts?.addListener) return nativeTts.addListener(event, listener);
+  return { remove: () => {} };
 }
