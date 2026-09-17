@@ -14,6 +14,10 @@ type NativeMediaTts = {
   stopRecording: () => Promise<void>;
   startPlayback: () => Promise<PlaybackStartResult>;
   stopPlayback: () => Promise<void>;
+  startFreeRecording: () => Promise<FreeRecordingStartResult>;
+  stopFreeRecording: () => Promise<FreeRecordingStopResult>;
+  playFile: (path: string) => Promise<void>;
+  saveBase64ToCache: (base64: string, name: string) => Promise<string>;
   addListener?: (event: string, listener: () => void) => { remove: () => void };
 };
 
@@ -114,6 +118,20 @@ export type RouteChangeEvent = {
   time: number;
 };
 
+export type FreeRecordingStartResult = {
+  mode: string;
+  inputs: string[];
+  outputs: string[];
+  routedInput: string;
+  builtInMicFound: boolean;
+};
+
+export type FreeRecordingStopResult = {
+  path: string;
+  bytes: number;
+  durationMs: number;
+};
+
 export async function startMicRecording(): Promise<RecordingStartResult> {
   if (nativeTts) return nativeTts.startRecording();
   throw new Error("Módulo nativo indisponível. Disponível só no APK Android.");
@@ -140,4 +158,24 @@ export function addMicListener(
 ): { remove: () => void } {
   if (nativeTts?.addListener) return nativeTts.addListener(event, listener);
   return { remove: () => {} };
+}
+
+export async function startFreeMicRecording(): Promise<FreeRecordingStartResult> {
+  if (nativeTts) return nativeTts.startFreeRecording();
+  throw new Error("Módulo nativo indisponível. Disponível só no APK Android.");
+}
+
+export async function stopFreeMicRecording(): Promise<FreeRecordingStopResult> {
+  if (nativeTts) return nativeTts.stopFreeRecording();
+  throw new Error("Módulo nativo indisponível.");
+}
+
+export async function playAudioFile(path: string): Promise<void> {
+  if (nativeTts) return nativeTts.playFile(path);
+  throw new Error("Módulo nativo indisponível. Disponível só no APK Android.");
+}
+
+export async function saveBase64Audio(base64: string, name: string): Promise<string> {
+  if (nativeTts) return nativeTts.saveBase64ToCache(base64, name);
+  throw new Error("Módulo nativo indisponível.");
 }

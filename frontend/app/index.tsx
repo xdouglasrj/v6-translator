@@ -1,6 +1,6 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Linking,
@@ -10,6 +10,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -30,7 +31,23 @@ import {
   type RecordingStartResult,
   type RecordingStopEvent,
   type RouteChangeEvent,
+  playAudioFile,
+  saveBase64Audio,
 } from "@/src/audio/mediaTts";
+import {
+  getApiKey,
+  setApiKey,
+  removeApiKey,
+  maskKey,
+  transcribe,
+  interpret,
+  generateSpeech,
+  type PipelinePhase,
+  type PipelineState,
+  initialPipelineState,
+  startCapture,
+  stopCapture,
+} from "@/src/openai";
 import { makeStyles, useTheme } from "@/src/theme";
 
 type LogItem = { id: string; time: string; text: string; tone?: "accent" | "good" | "warn" };
@@ -61,6 +78,13 @@ export default function Index() {
   const [micCountdown, setMicCountdown] = useState(0);
   const [micRecordingInfo, setMicRecordingInfo] = useState<RecordingStartResult | null>(null);
   const [micPermissionDenied, setMicPermissionDenied] = useState(false);
+
+  const [pipeline, setPipeline] = useState<PipelineState>(initialPipelineState);
+  const [apiKey, setApiKeyState] = useState<string | null>(null);
+  const [apiKeyMasked, setApiKeyMasked] = useState<string>("");
+  const [keyInput, setKeyInput] = useState("");
+  const [keySaving, setKeySaving] = useState(false);
+  const pipelineAbort = useRef(false);
 
   const addLog = useCallback((text: string, tone?: LogItem["tone"]) => {
     const now = new Date();
@@ -98,6 +122,34 @@ export default function Index() {
       clearInterval(interval);
     };
   }, [refreshAudio]);
+
+  useEffect(() => {
+    void getApiKey().then((key) => {
+      if (key) {
+        setApiKeyState(key);
+        setApiKeyMasked(maskKey(key));
+      }
+    });
+  }, []);
+
+  const handleSaveKey = async () => {
+    const trimmed = keyInput.trim();
+    if (!trimmed) return;
+    setKeySaving(true);
+    await setApiKey(trimmed);
+    setApiKeyState(trimmed);
+    setApiKeyMasked(maskKey(trimmed));
+    setKeyInput("");
+    setKeySaving(false);
+    addLog("Chave da OpenAI salva", "good");
+  };
+
+  const handleRemoveKey = async () => {
+    await removeApiKey();
+    setApiKeyState(null);
+    setApiKeyMasked("");
+    addLog("Chave da OpenAI removida", "warn");
+  };
 
   const handlePlay = async () => {
     if (playing || preparing) return;
@@ -250,6 +302,147 @@ export default function Index() {
     addLog("Reprodução da gravação interrompida", "warn");
   };
 
+  const canPtt = apiKey && pipeline.phase === "PRONTO" && isNativeMediaTtsAvailable;
+
+  const handlePttPressIn = async () => {
+    if (!canPtt) return;
+    if (micPlaying) {
+      await stopMicPlayback().catch(() => {});
+      setMicPlaying(false);
+    }
+    if (Platform.OS === "android" && isNativeMediaTtsAvailable) {
+      const result = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+        {
+          title: "Permissão de microfone",
+          message: "O aplicativo usa o microfone para gravar e interpretar sua fala.",
+          buttonPositive: "Permitir",
+          buttonNegative: "Agora não",
+        },
+      );
+      if (result === PermissionsAndroid.RESULTS.DENIED || result === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN) {
+        setMicPermissionDenied(true);
+        addLog("Permissão de microfone negada", "warn");
+        return;
+      }
+    }
+    setMicPermissionDenied(false);
+    pipelineAbort.current = false;
+    setPipeline({ ...initialPipelineState, phase: "OUVINDO" });
+    addLog("Segurando... falhe agora", "accent");
+    try {
+      await startCapture();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "falha ao gravar";
+      addLog(`Falha na gravação: ${msg}`, "warn");
+      setPipeline({ ...initialPipelineState, error: msg });
+    }
+  };
+
+  const handlePttPressOut = async () => {
+    if (pipeline.phase !== "OUVINDO") return;
+    addLog("Soltou — processando...", "accent");
+    setPipeline((prev) => ({ ...prev, phase: "PROCESSANDO" }));
+    try {
+      const capture = await stopCapture();
+      if (capture.durationMs < 1000) {
+        addLog("Gravação muito curta — descartada", "warn");
+        setPipeline({ ...initialPipelineState });
+        return;
+      }
+      if (pipelineAbort.current) {
+        setPipeline({ ...initialPipelineState });
+        return;
+      }
+
+      const key = apiKey!;
+      const t0 = Date.now();
+
+      setPipeline((prev) => ({ ...prev, phase: "TRANSCREVENDO" }));
+      addLog("Transcrevendo...", "accent");
+      const t1 = Date.now();
+      const transcribed = await transcribe(key, `file://${capture.path}`, "fala.m4a");
+      const transcriptionMs = Date.now() - t1;
+      addLog(`Transcrição: ${transcriptionMs}ms`, "accent");
+
+      if (!transcribed.text || !transcribed.text.trim()) {
+        addLog("Não foi possível entender.", "warn");
+        setPipeline({ ...initialPipelineState });
+        return;
+      }
+      if (transcribed.languages && transcribed.languages.length > 0 && transcribed.languages[0].code) {
+        addLog(`Idioma detectado: ${transcribed.languages[0].code}`, "accent");
+      }
+      const lang = transcribed.languages?.[0]?.code || "";
+      addLog(`OUVIDO: ${transcribed.text}`, "accent");
+
+      if (!lang) {
+        addLog("Não foi possível entender.", "warn");
+        setPipeline({ ...initialPipelineState });
+        return;
+      }
+
+      if (pipelineAbort.current) {
+        setPipeline({ ...initialPipelineState });
+        return;
+      }
+
+      setPipeline((prev) => ({ ...prev, phase: "INTERPRETANDO", heard: transcribed.text, detectedLanguage: lang }));
+      addLog("Interpretando...", "accent");
+      const t2 = Date.now();
+      const interpreted = await interpret(key, transcribed.text);
+      const interpretationMs = Date.now() - t2;
+      addLog(`Interpretação: ${interpretationMs}ms`, "accent");
+
+      if (!interpreted.text || !interpreted.text.trim()) {
+        addLog("Não foi possível entender.", "warn");
+        setPipeline({ ...initialPipelineState });
+        return;
+      }
+      addLog(`INTERPRETAÇÃO: ${interpreted.text}`, "accent");
+
+      if (pipelineAbort.current) {
+        setPipeline({ ...initialPipelineState });
+        return;
+      }
+
+      setPipeline((prev) => ({ ...prev, phase: "GERANDO_VOZ", interpretation: interpreted.text }));
+      addLog("Gerando voz...", "accent");
+      const t3 = Date.now();
+      const speech = await generateSpeech(key, interpreted.text);
+      const speechMs = Date.now() - t3;
+      addLog(`Voz: ${speechMs}ms`, "accent");
+
+      if (pipelineAbort.current) {
+        setPipeline({ ...initialPipelineState });
+        return;
+      }
+
+      const fileName = `fase3-voz-${Date.now()}.mp3`;
+      const audioPath = await saveBase64Audio(speech.audioBase64, fileName);
+      addLog(`Salvo: ${audioPath}`, "accent");
+
+      setPipeline((prev) => ({ ...prev, phase: "REPRODUZINDO" }));
+      addLog("Reproduzindo...", "accent");
+      await playAudioFile(audioPath);
+
+      const totalMs = Date.now() - t0;
+      addLog(`Total: ${totalMs}ms`, "good");
+      addLog(`Tempos — transcrição: ${transcriptionMs}ms · IA: ${interpretationMs}ms · voz: ${speechMs}ms · total: ${totalMs}ms`, "accent");
+      setPipeline({ ...initialPipelineState });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "erro desconhecido";
+      if (msg.includes("CHAVE_RECUSADA")) {
+        addLog("Chave recusada pela OpenAI", "warn");
+      } else if (msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("Network request failed")) {
+        addLog("Sem conexão com a internet.", "warn");
+      } else {
+        addLog(`Erro: ${msg}`, "warn");
+      }
+      setPipeline({ ...initialPipelineState, error: msg });
+    }
+  };
+
   const nativeLabel = Platform.OS === "android"
     ? (isNativeMediaTtsAvailable ? "MÓDULO MEDIA ATIVO" : "MÓDULO NATIVO NECESSÁRIO")
     : "PRÉVIA · MEDIA NO APK";
@@ -303,6 +496,17 @@ export default function Index() {
               onMicStopRecording={handleMicStopRecording}
               onMicPlay={handleMicPlay}
               onMicStop={handleMicStop}
+              pipeline={pipeline.phase}
+              apiKey={apiKey}
+              apiKeyMasked={apiKeyMasked}
+              keyInput={keyInput}
+              keySaving={keySaving}
+              onKeyInputChange={setKeyInput}
+              onKeySave={handleSaveKey}
+              onKeyRemove={handleRemoveKey}
+              onPttPressIn={handlePttPressIn}
+              onPttPressOut={handlePttPressOut}
+              canPtt={!!canPtt}
             />
           ) : (
             <DiagnosticsScreen
@@ -390,6 +594,17 @@ function TestScreen({
   onMicStopRecording,
   onMicPlay,
   onMicStop,
+  pipeline,
+  apiKey,
+  apiKeyMasked,
+  keyInput,
+  keySaving,
+  onKeyInputChange,
+  onKeySave,
+  onKeyRemove,
+  onPttPressIn,
+  onPttPressOut,
+  canPtt,
 }: {
   snapshot: AudioSnapshot;
   loading: boolean;
@@ -409,6 +624,17 @@ function TestScreen({
   onMicStopRecording: () => void;
   onMicPlay: () => void;
   onMicStop: () => void;
+  pipeline: PipelinePhase;
+  apiKey: string | null;
+  apiKeyMasked: string;
+  keyInput: string;
+  keySaving: boolean;
+  onKeyInputChange: (text: string) => void;
+  onKeySave: () => void;
+  onKeyRemove: () => void;
+  onPttPressIn: () => void;
+  onPttPressOut: () => void;
+  canPtt: boolean;
 }) {
   const { colors } = useTheme();
   return (
@@ -539,6 +765,105 @@ function TestScreen({
             </View>
           </View>
         </>
+      )}
+
+      <View style={[styles.sectionHeading, { marginTop: 28 }]}>
+        <Text style={styles.sectionTitle}>FASE 3 · INTÉRPRETE OPENAI</Text>
+        <Text style={styles.sectionSubtitle}>Push To Talk: segure para falar, solte para interpretar.</Text>
+      </View>
+
+      {!apiKey ? (
+        <View style={styles.diagnosticCard}>
+          <View style={styles.metricRow}>
+            <Text style={styles.metricLabel}>CHAVE OPENAI</Text>
+            <Text style={[styles.metricValue, { color: colors.warning }]}>Necessária</Text>
+          </View>
+          <TextInput
+            style={{ color: colors.onSurface, fontSize: 13, borderWidth: 1, borderColor: colors.border, borderRadius: 8, padding: 10, marginTop: 8, backgroundColor: colors.surfaceTertiary }}
+            placeholder="sk-..."
+            placeholderTextColor={colors.muted}
+            value={keyInput}
+            onChangeText={onKeyInputChange}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <Pressable
+            accessibilityRole="button"
+            onPress={onKeySave}
+            disabled={keySaving || !keyInput.trim()}
+            style={({ pressed }) => [styles.primaryButton, { marginTop: 10 }, (keySaving || !keyInput.trim()) && styles.disabledButton, pressed && styles.buttonPressed]}
+          >
+            {keySaving ? <ActivityIndicator color={colors.onBrandPrimary} /> : <MaterialCommunityIcons name="key-variant" size={20} color={colors.onBrandPrimary} />}
+            <Text style={styles.primaryButtonText}>SALVAR CHAVE</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <View style={styles.diagnosticCard}>
+          <View style={styles.metricRow}>
+            <Text style={styles.metricLabel}>CHAVE</Text>
+            <Text style={styles.metricValue}>{apiKeyMasked}</Text>
+          </View>
+          <View style={[styles.metricRow, { borderBottomWidth: 0 }]}>
+            <Text style={styles.metricLabel}>STATUS</Text>
+            <Text style={[styles.metricValue, { color: colors.success }]}>Configurada</Text>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            onPress={onKeyRemove}
+            style={({ pressed }) => [styles.outlineButton, { marginTop: 10 }, pressed && styles.buttonPressed]}
+          >
+            <MaterialCommunityIcons name="key-remove" size={18} color={colors.warning} />
+            <Text style={[styles.outlineButtonText, { color: colors.warning }]}>APAGAR CHAVE</Text>
+          </Pressable>
+        </View>
+      )}
+
+      <View style={styles.diagnosticCard}>
+        <View style={styles.metricRow}>
+          <Text style={styles.metricLabel}>PIPELINE</Text>
+          <Text style={[styles.metricValue, pipeline !== "PRONTO" && { color: colors.brandPrimary }]}>
+            {pipeline === "PRONTO" ? "Aguardando" : pipeline === "OUVINDO" ? "Ouvindo..." : pipeline === "PROCESSANDO" ? "Processando..." : pipeline === "TRANSCREVENDO" ? "Transcrevendo..." : pipeline === "INTERPRETANDO" ? "Interpretando..." : pipeline === "GERANDO_VOZ" ? "Gerando voz..." : pipeline === "REPRODUZINDO" ? "Reproduzindo..." : "Erro"}
+          </Text>
+        </View>
+        <View style={[styles.metricRow, { borderBottomWidth: 0 }]}>
+          <Text style={styles.metricLabel}>MICROFONE</Text>
+          <Text style={styles.metricValue}>Interno do celular</Text>
+        </View>
+      </View>
+
+      {Platform.OS === "web" || !isNativeMediaTtsAvailable ? (
+        <View style={styles.diagnosticCard}>
+          <Text style={styles.metricValue}>Disponível só no APK Android</Text>
+        </View>
+      ) : (
+        <View style={styles.actionStack}>
+          <Pressable
+            accessibilityRole="button"
+            onPressIn={onPttPressIn}
+            onPressOut={onPttPressOut}
+            disabled={!canPtt}
+            style={({ pressed }) => [
+              styles.primaryButton,
+              pipeline === "OUVINDO" && { backgroundColor: colors.warning },
+              (!canPtt) && styles.disabledButton,
+              pressed && styles.buttonPressed,
+            ]}
+          >
+            {pipeline !== "PRONTO" ? (
+              <ActivityIndicator color={colors.onBrandPrimary} />
+            ) : (
+              <MaterialCommunityIcons name="microphone" size={24} color={colors.onBrandPrimary} />
+            )}
+            <Text style={styles.primaryButtonText}>
+              {pipeline === "PRONTO"
+                ? "SEGURE PARA FALAR"
+                : pipeline === "OUVINDO"
+                  ? "GRAVANDO..."
+                  : "PROCESSANDO..."}
+            </Text>
+          </Pressable>
+        </View>
       )}
     </View>
   );

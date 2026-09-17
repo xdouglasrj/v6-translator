@@ -38,12 +38,17 @@ class V6MediaTtsModule : Module() {
   private var recordingStartedAt = 0L
   private var lastRoute: String? = null
 
+  private var freeMediaRecorder: MediaRecorder? = null
+  private var isFreeRecording = false
+  private var freeRecordingStartedAt = 0L
+  private var freeRecordingFile: File? = null
+
   private val audioManager: AudioManager?
     get() = appContext.reactContext?.getSystemService(AudioManager::class.java)
 
   override fun definition() = ModuleDefinition {
     Name("V6MediaTts")
-    Events("onSpeechStart", "onSpeechDone", "onSpeechError", "onRecordingStop", "onPlaybackStart", "onPlaybackStop", "onRouteChange")
+    Events("onSpeechStart", "onSpeechDone", "onSpeechError", "onRecordingStop", "onFreeRecordingStop", "onPlaybackStart", "onPlaybackStop", "onRouteChange")
 
     OnCreate {
       val context = appContext.reactContext ?: return@OnCreate
@@ -92,6 +97,7 @@ class V6MediaTtsModule : Module() {
       audioDeviceCallback?.let { audioManager?.unregisterAudioDeviceCallback(it) }
       audioDeviceCallback = null
       stopRecordingInternal()
+      stopFreeRecordingInternal()
       stopPlaybackInternal()
     }
 
@@ -320,6 +326,200 @@ class V6MediaTtsModule : Module() {
       stopPlaybackInternal()
       promise.resolve(null)
     }
+
+    AsyncFunction("startFreeRecording") { promise: Promise ->
+      val context = appContext.reactContext
+      if (context == null) {
+        promise.reject("NO_CONTEXT", "Contexto Android indisponível.", null)
+        return@AsyncFunction
+      }
+      if (isFreeRecording) {
+        promise.reject("ALREADY_RECORDING", "Gravação livre já em andamento.", null)
+        return@AsyncFunction
+      }
+      if (isPlaying) {
+        stopPlaybackInternal()
+      }
+      try {
+        val file = File(context.cacheDir, "fase3-livre.m4a")
+        if (file.exists()) file.delete()
+
+        val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+          MediaRecorder(context)
+        } else {
+          @Suppress("DEPRECATION")
+          MediaRecorder()
+        }
+
+        recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+        recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+        recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+        recorder.setOutputFile(file.absolutePath)
+
+        val inputs = audioManager?.getDevices(AudioManager.GET_DEVICES_INPUTS) ?: emptyArray()
+        val builtInMic = inputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+        if (builtInMic != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+          recorder.setPreferredDevice(builtInMic)
+        }
+
+        recorder.prepare()
+        recorder.start()
+        freeMediaRecorder = recorder
+        isFreeRecording = true
+        freeRecordingStartedAt = System.currentTimeMillis()
+        freeRecordingFile = file
+
+        val outputs = audioManager?.getDevices(AudioManager.GET_DEVICES_OUTPUTS) ?: emptyArray()
+        val inputList = inputs.map { "${deviceTypeName(it.type)}:${it.productName}" }
+        val outputList = outputs.map { "${deviceTypeName(it.type)}:${it.productName}" }
+
+        val routedInput = try {
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            recorder.routedDevice?.productName?.toString() ?: "indisponível"
+          } else "indisponível"
+        } catch (_: Exception) { "indisponível" }
+
+        promise.resolve(mapOf(
+          "mode" to modeLabel(audioManager?.mode ?: AudioManager.MODE_NORMAL),
+          "inputs" to inputList,
+          "outputs" to outputList,
+          "routedInput" to routedInput,
+          "builtInMicFound" to (builtInMic != null)
+        ))
+      } catch (e: Exception) {
+        promise.reject("RECORD_FAILED", "Falha ao iniciar gravação livre: ${e.message}", null)
+      }
+    }
+
+    AsyncFunction("stopFreeRecording") { promise: Promise ->
+      if (!isFreeRecording) {
+        promise.reject("NOT_RECORDING", "Nenhuma gravação livre em andamento.", null)
+        return@AsyncFunction
+      }
+      val durationMs = System.currentTimeMillis() - freeRecordingStartedAt
+      val file = freeRecordingFile
+      try {
+        freeMediaRecorder?.stop()
+      } catch (_: Exception) {}
+      try { freeMediaRecorder?.release() } catch (_: Exception) {}
+      freeMediaRecorder = null
+      isFreeRecording = false
+
+      val path = file?.absolutePath ?: ""
+      val bytes = if (file?.exists() == true) file.length() else 0L
+      sendEvent("onFreeRecordingStop", mapOf(
+        "path" to path,
+        "bytes" to bytes,
+        "durationMs" to durationMs,
+        "mode" to modeLabel(audioManager?.mode ?: AudioManager.MODE_NORMAL),
+        "outputs" to emptyList<String>()
+      ))
+      promise.resolve(mapOf(
+        "path" to path,
+        "bytes" to bytes,
+        "durationMs" to durationMs
+      ))
+    }
+
+    AsyncFunction("playFile") { path: String, promise: Promise ->
+      val context = appContext.reactContext
+      if (context == null) {
+        promise.reject("NO_CONTEXT", "Contexto Android indisponível.", null)
+        return@AsyncFunction
+      }
+      if (isPlaying) {
+        stopPlaybackInternal()
+      }
+      val file = File(path)
+      if (!file.exists()) {
+        promise.reject("FILE_NOT_FOUND", "Arquivo de áudio não encontrado: $path", null)
+        return@AsyncFunction
+      }
+
+      val settled = java.util.concurrent.atomic.AtomicBoolean(false)
+      val manager = audioManager
+      val focusResult = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val attrs = AudioAttributes.Builder()
+          .setUsage(AudioAttributes.USAGE_MEDIA)
+          .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+          .build()
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+          .setAudioAttributes(attrs)
+          .build()
+        audioFocusRequest = request
+        manager?.requestAudioFocus(request) ?: AudioManager.AUDIOFOCUS_REQUEST_FAILED
+      } else {
+        @Suppress("DEPRECATION")
+        manager?.requestAudioFocus(
+          legacyFocusListener,
+          AudioManager.STREAM_MUSIC,
+          AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+        ) ?: AudioManager.AUDIOFOCUS_REQUEST_FAILED
+      }
+
+      audioFocusGranted = focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+      if (!audioFocusGranted) {
+        promise.reject("FOCUS_DENIED", "Foco de áudio negado.", null)
+        return@AsyncFunction
+      }
+
+      try {
+        val player = MediaPlayer()
+        val attrs = AudioAttributes.Builder()
+          .setUsage(AudioAttributes.USAGE_MEDIA)
+          .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+          .build()
+        player.setAudioAttributes(attrs)
+        player.setDataSource(file.absolutePath)
+        player.setOnPreparedListener {
+          isPlaying = true
+          sendEvent("onPlaybackStart", mapOf("time" to System.currentTimeMillis()))
+          it.start()
+        }
+        player.setOnCompletionListener {
+          sendEvent("onPlaybackStop", mapOf("time" to System.currentTimeMillis()))
+          stopPlaybackInternal()
+          if (settled.compareAndSet(false, true)) promise.resolve(null)
+        }
+        player.setOnErrorListener { _, _, _ ->
+          stopPlaybackInternal()
+          if (settled.compareAndSet(false, true)) promise.reject("PLAYBACK_FAILED", "Erro na reprodução.", null)
+          false
+        }
+        player.prepareAsync()
+        mediaPlayer = player
+
+        val handler = Handler(Looper.getMainLooper())
+        val timeoutRunnable = Runnable {
+          if (isPlaying && settled.compareAndSet(false, true)) {
+            stopPlaybackInternal()
+            promise.reject("PLAYBACK_TIMEOUT", "Reprodução excedeu 30s.", null)
+          }
+        }
+        handler.postDelayed(timeoutRunnable, 30_000)
+
+        // ponytail: promise resolve moved to onCompletionListener
+      } catch (e: Exception) {
+        abandonAudioFocus()
+        promise.reject("PLAYBACK_FAILED", "Falha ao reproduzir arquivo: ${e.message}", null)
+      }
+    }
+
+    AsyncFunction("saveBase64ToCache") { base64: String, name: String, promise: Promise ->
+      val context = appContext.reactContext
+      if (context == null) {
+        promise.reject("NO_CONTEXT", "Contexto Android indisponível.", null)
+        return@AsyncFunction
+      }
+      try {
+        val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
+        val file = File(context.cacheDir, name)
+        file.writeBytes(bytes)
+        promise.resolve(file.absolutePath)
+      } catch (e: Exception) {
+        promise.reject("SAVE_FAILED", "Falha ao salvar áudio: ${e.message}", null)
+      }
+    }
   }
 
   private val progressListener = object : UtteranceProgressListener() {
@@ -407,6 +607,17 @@ class V6MediaTtsModule : Module() {
       mediaRecorder = null
       isRecording = false
     }
+  }
+
+  private fun stopFreeRecordingInternal() {
+    if (!isFreeRecording) return
+    try {
+      freeMediaRecorder?.stop()
+    } catch (_: Exception) {}
+    try { freeMediaRecorder?.release() } catch (_: Exception) {}
+    freeMediaRecorder = null
+    isFreeRecording = false
+    freeRecordingFile = null
   }
 
   private fun finishRecording() {
