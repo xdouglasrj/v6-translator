@@ -129,3 +129,92 @@ OpenAI para cortar latência.
 ## [ ] 6. Fase 5 — otimização e distribuição
 Latência, ruído, telas para uso na moto, idiomas extras, microfone Bluetooth
 experimental, servidor intermediário para a chave da OpenAI sair do aparelho.
+
+## [~] 7. Fase 4 — IA intérprete em conversa contínua (OpenAI Realtime)
+
+CORREÇÃO DE RUMO (Douglas, 17/09/2026): o produto não é tradutor de frases nem
+assistente. É uma intérprete que fica NO MEIO de uma conversa presencial —
+DOUGLAS ⇄ IA ⇄ JOHN — ouvindo sempre, detectando sozinha quando cada um parou
+de falar, e falando a interpretação. A Fase 3 (botão SEGURE PARA FALAR) fica
+apenas como ferramenta de diagnóstico; a conversa por turnos é o produto.
+Os dois V6 ouvem a MESMA voz da intérprete: não existem canais separados.
+
+TAREFA: fase4-realtime
+OBJETIVO: uma sessão de conversa em que ninguém aperta botão por frase. A IA
+identifica quem falou pelo idioma, anuncia ("John disse: …", "Douglas said: …")
+e fala a interpretação pelo caminho de mídia já validado, saindo nos dois V6.
+
+API REAL (conferida na documentação da OpenAI em 17/09/2026):
+- Modelo: `gpt-realtime-2.1`.
+- Conexão do aparelho: WebSocket `wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1`.
+- Credencial temporária para cliente móvel: o backend chama
+  `POST /v1/realtime/client_secrets` com a chave secreta e devolve só o segredo
+  temporário ao app. A chave permanente NUNCA sai do servidor.
+- Configuração por evento `session.update`: `session.audio.input` (formato pcm16,
+  24000 Hz) e `session.audio.output`; detecção de turno
+  `turn_detection: { type: "semantic_vad" }`, que espera a pessoa terminar a
+  frase em vez de cortar em pausa curta.
+- Áudio de entrada vai em `input_audio_buffer.append` (pedaços em base64).
+- Áudio de saída chega em pedaços; tocar conforme chega, com folga de buffer.
+
+ARQUITETURA (o que precisa ser escrito, separado por responsabilidade):
+- Kotlin, captura: `AudioRecord` em 24000 Hz, mono, PCM 16 bits, fonte MIC do
+  celular (não o microfone do V6), mandando pedaços em base64 por evento para o JS.
+- Kotlin, saída: `AudioTrack` em modo fluxo com `AudioAttributes` `USAGE_MEDIA`
+  + `CONTENT_TYPE_SPEECH` (o `MediaPlayer` de arquivo não serve para fluxo).
+  MESMO pedido de foco de áudio da Fase 2.
+- JS: sessão Realtime (WebSocket), máquina de estados, diagnóstico, tela.
+- Backend (`backend/server.py`, FastAPI já existente): uma rota nova que cria a
+  credencial temporária. A chave fica em variável de ambiente no servidor.
+
+ESTADOS: DESCONECTADO → CONECTANDO → OUVINDO → PESSOA FALANDO → INTERPRETANDO →
+IA FALANDO → OUVINDO, mais ERRO. A tela mostra o estado atual em texto grande.
+
+ANTI-LOOP: enquanto a IA fala, o app PARA de mandar áudio do microfone (não
+manda e ainda descarta o que chegar). Volta a mandar quando a fala termina, com
+um intervalo curto configurável. Full duplex não é objetivo agora.
+
+INSTRUÇÃO DA SESSÃO: a intérprete anuncia quem falou, interpreta natural, não
+responde pergunta de ninguém, não opina, não inventa, não diz que é IA, não
+explica a tradução; preserva nomes, números, preços, horários, lugares,
+perguntas, intenção e contexto. Nomes e idiomas vêm da configuração da tela.
+
+CONFIGURAÇÃO NA TELA: meu nome (Douglas), meu idioma (pt-BR), nome do turista
+(John), idioma do turista (en-US). Botão [CONECTAR INTÉRPRETE] / [ENCERRAR].
+As áreas das Fases 1, 2 e 3 continuam na tela, para achar regressão.
+
+IDENTIFICAÇÃO DE QUEM FALA: pelo idioma da fala, nesta fase. Sem biometria de
+voz. Ambíguo → não inventa nome; o código fica preparado para melhorar isso.
+
+DIAGNÓSTICO: modo de áudio do Android, entrada, saída, rota Bluetooth, taxa de
+amostragem, tamanho de buffer, estado da sessão Realtime, estado do detector de
+fala, início/fim de fala, início/fim da resposta, início/fim da reprodução,
+erros de rede e reconexões. Nunca a chave nem o segredo temporário.
+
+LATÊNCIA: marcar horário de fala iniciada, fala encerrada, envio, resposta
+iniciada, primeiro áudio recebido, primeiro áudio tocado, resposta concluída. O
+número que importa: fim da fala da pessoa → primeiro áudio da interpretação.
+
+REGRAS APLICÁVEIS: proibido `MODE_IN_COMMUNICATION`, `STREAM_VOICE_CALL`,
+`USAGE_VOICE_COMMUNICATION`, Bluetooth SCO/HFP, microfone do V6 e qualquer API
+de voz que escolha a saída sozinha. A saída é sempre o caminho de mídia já
+validado. Não redesenhar o app, não reescrever o que existe, não quebrar as
+Fases 1, 2 e 3.
+
+PRONTO QUANDO:
+1. Busca no código não acha item proibido nem chave/segredo.
+2. Tipos sem erro; build do GitHub verde; APK entregue com o caminho informado.
+3. Fases 1, 2 e 3 continuam na tela e funcionando.
+4. Teste físico: John fala "Where are we going now?" → a IA fala "John disse:
+   Para onde estamos indo agora?" nos dois V6; Douglas responde "Agora nós vamos
+   para a Rocinha." → a IA fala "Douglas said: Now we're going to Rocinha." nos
+   dois V6; a conversa segue sem apertar botão por frase.
+
+FORA DE ESCOPO: Gemini, Google Tradutor, login, pagamento, painel, histórico
+permanente, GPS, mapas, vários turistas, biometria de voz, palavra de ativação,
+microfone Bluetooth, full duplex avançado, Play Store.
+
+PENDENTE DE DECISÃO DO DOUGLAS (bloqueia o começo):
+- Onde o backend vai rodar (ele precisa estar no ar para o app pegar a
+  credencial temporária): computador dele na rede local, ou serviço na nuvem.
+- A chave secreta da OpenAI, colocada por ele na variável de ambiente do servidor.
