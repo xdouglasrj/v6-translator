@@ -1,4 +1,5 @@
 import type { InterpreterConfig } from "./state";
+import { getApiKey } from "@/src/openai";
 
 type SessionEvent =
   | { type: "connected" }
@@ -27,6 +28,21 @@ export async function fetchClientSecret(
     throw new Error(text || `Servidor retornou ${res.status}`);
   }
   return res.json();
+}
+
+export async function resolveCredential(
+  cfg: InterpreterConfig,
+  instructions: string,
+): Promise<string> {
+  if (cfg.credentialOrigin === "CELULAR") {
+    const key = await getApiKey();
+    if (!key) {
+      throw new Error("Sem chave salva");
+    }
+    return key;
+  }
+  const secret = await fetchClientSecret(cfg.serverUrl, instructions);
+  return secret.value;
 }
 
 export function buildInstructions(cfg: InterpreterConfig): string {

@@ -7,6 +7,8 @@ export type InterpreterState =
   | "IA_FALANDO"
   | "ERRO";
 
+export type CredentialOrigin = "CELULAR" | "SERVIDOR";
+
 export type InterpreterConfig = {
   serverUrl: string;
   myName: string;
@@ -14,6 +16,7 @@ export type InterpreterConfig = {
   touristName: string;
   touristLanguage: string;
   resumeDelayMs: number;
+  credentialOrigin: CredentialOrigin;
 };
 
 export type InterpreterTimings = {
@@ -59,4 +62,5 @@ export const DEFAULT_CONFIG: InterpreterConfig = {
   touristName: "John",
   touristLanguage: "English",
   resumeDelayMs: 400,
+  credentialOrigin: "CELULAR",
 };

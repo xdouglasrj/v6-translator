@@ -13,6 +13,7 @@ import {
   fetchClientSecret,
   buildInstructions,
   openSession,
+  resolveCredential,
   type RealtimeSession,
 } from "./session";
 
@@ -131,7 +132,11 @@ export function createInterpreter() {
 
     if (type === "error") {
       const msg = (data.error as { message?: string })?.message ?? "Erro desconhecido";
-      emit({ state: "ERRO", error: msg });
+      if (msg.includes("401") || msg.includes("unauthorized") || msg.includes("credential") || msg.includes("api_key")) {
+        emit({ state: "ERRO", error: "Chave recusada pela OpenAI" });
+      } else {
+        emit({ state: "ERRO", error: msg });
+      }
       return;
     }
 
@@ -183,13 +188,17 @@ export function createInterpreter() {
   async function doConnect() {
     teardownAudio();
     const instructions = buildInstructions(config);
-    const secret = await fetchClientSecret(config.serverUrl, instructions);
+    const credential = await resolveCredential(config, instructions);
 
-    session = openSession(secret.value, instructions, (evt) => {
+    session = openSession(credential, instructions, (evt) => {
       if (evt.type === "connected") {
         reconnectAttempt = 0;
         emit({ state: "OUVINDO", error: null });
       } else if (evt.type === "disconnected") {
+        if (evt.code === 1008) {
+          emit({ state: "ERRO", error: "Chave recusada pela OpenAI" });
+          return;
+        }
         if (!userDisconnected) {
           void reconnect();
         }
@@ -254,7 +263,9 @@ export function createInterpreter() {
         await doConnect();
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Falha ao conectar";
-        if (msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("Network request failed")) {
+        if (msg === "Sem chave salva") {
+          emit({ state: "ERRO", error: "Salve a chave da OpenAI na área da Fase 3 para usar o intérprete." });
+        } else if (msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("Network request failed")) {
           emit({ state: "ERRO", error: "Servidor local não respondeu" });
         } else {
           emit({ state: "ERRO", error: msg });

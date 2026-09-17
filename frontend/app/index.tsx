@@ -52,6 +52,7 @@ import {
   createInterpreter,
   DEFAULT_CONFIG,
   type InterpreterSnapshot,
+  type CredentialOrigin,
 } from "@/src/realtime";
 import { storage } from "@/src/utils/storage";
 import { makeStyles, useTheme } from "@/src/theme";
@@ -99,6 +100,7 @@ export default function Index() {
   const [f4MyLanguage, setF4MyLanguage] = useState(DEFAULT_CONFIG.myLanguage);
   const [f4TouristName, setF4TouristName] = useState(DEFAULT_CONFIG.touristName);
   const [f4TouristLanguage, setF4TouristLanguage] = useState(DEFAULT_CONFIG.touristLanguage);
+  const [f4CredentialOrigin, setF4CredentialOrigin] = useState<CredentialOrigin>(DEFAULT_CONFIG.credentialOrigin);
   const [f4Snapshot, setF4Snapshot] = useState<InterpreterSnapshot>({
     state: "DESCONECTADO",
     lastSpeech: "",
@@ -173,6 +175,7 @@ export default function Index() {
           if (cfg.myLanguage) setF4MyLanguage(cfg.myLanguage);
           if (cfg.touristName) setF4TouristName(cfg.touristName);
           if (cfg.touristLanguage) setF4TouristLanguage(cfg.touristLanguage);
+          if (cfg.credentialOrigin) setF4CredentialOrigin(cfg.credentialOrigin);
         } catch { /* ignore */ }
       }
     });
@@ -349,7 +352,7 @@ export default function Index() {
   };
 
   const handleSaveF4Config = async () => {
-    const cfg = { serverUrl: f4ServerUrl, myName: f4MyName, myLanguage: f4MyLanguage, touristName: f4TouristName, touristLanguage: f4TouristLanguage };
+    const cfg = { serverUrl: f4ServerUrl, myName: f4MyName, myLanguage: f4MyLanguage, touristName: f4TouristName, touristLanguage: f4TouristLanguage, credentialOrigin: f4CredentialOrigin };
     await storage.setItem(F4_STORAGE_KEY, JSON.stringify(cfg));
     interpreterRef.current?.setConfig(cfg);
     addLog("Configuração do intérprete salva", "good");
@@ -359,7 +362,7 @@ export default function Index() {
     await handleSaveF4Config();
     const interp = createInterpreter();
     interpreterRef.current = interp;
-    interp.setConfig({ serverUrl: f4ServerUrl, myName: f4MyName, myLanguage: f4MyLanguage, touristName: f4TouristName, touristLanguage: f4TouristLanguage });
+    interp.setConfig({ serverUrl: f4ServerUrl, myName: f4MyName, myLanguage: f4MyLanguage, touristName: f4TouristName, touristLanguage: f4TouristLanguage, credentialOrigin: f4CredentialOrigin });
     interp.setListener((snap) => {
       setF4Snapshot(snap);
       if (snap.state === "ERRO" && snap.error) {
@@ -596,11 +599,13 @@ export default function Index() {
               f4TouristName={f4TouristName}
               f4TouristLanguage={f4TouristLanguage}
               f4Snapshot={f4Snapshot}
+              f4CredentialOrigin={f4CredentialOrigin}
               onF4ServerUrlChange={setF4ServerUrl}
               onF4MyNameChange={setF4MyName}
               onF4MyLanguageChange={setF4MyLanguage}
               onF4TouristNameChange={setF4TouristName}
               onF4TouristLanguageChange={setF4TouristLanguage}
+              onF4CredentialOriginChange={setF4CredentialOrigin}
               onF4Connect={handleF4Connect}
               onF4Disconnect={handleF4Disconnect}
             />
@@ -707,11 +712,13 @@ function TestScreen({
   f4TouristName,
   f4TouristLanguage,
   f4Snapshot,
+  f4CredentialOrigin,
   onF4ServerUrlChange,
   onF4MyNameChange,
   onF4MyLanguageChange,
   onF4TouristNameChange,
   onF4TouristLanguageChange,
+  onF4CredentialOriginChange,
   onF4Connect,
   onF4Disconnect,
 }: {
@@ -750,11 +757,13 @@ function TestScreen({
   f4TouristName: string;
   f4TouristLanguage: string;
   f4Snapshot: InterpreterSnapshot;
+  f4CredentialOrigin: CredentialOrigin;
   onF4ServerUrlChange: (v: string) => void;
   onF4MyNameChange: (v: string) => void;
   onF4MyLanguageChange: (v: string) => void;
   onF4TouristNameChange: (v: string) => void;
   onF4TouristLanguageChange: (v: string) => void;
+  onF4CredentialOriginChange: (v: CredentialOrigin) => void;
   onF4Connect: () => void;
   onF4Disconnect: () => void;
 }) {
@@ -1001,6 +1010,54 @@ function TestScreen({
         <>
           <View style={styles.diagnosticCard}>
             <View style={styles.metricRow}>
+              <Text style={styles.metricLabel}>ORIGEM DA CHAVE</Text>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => onF4CredentialOriginChange("CELULAR")}
+                  style={({ pressed }) => [
+                    styles.secondaryButton,
+                    f4CredentialOrigin === "CELULAR" && { backgroundColor: colors.brandTertiary },
+                    pressed && styles.buttonPressed,
+                  ]}
+                >
+                  <MaterialCommunityIcons name="cellphone" size={16} color={f4CredentialOrigin === "CELULAR" ? colors.brandPrimary : colors.muted} />
+                  <Text style={[styles.secondaryButtonText, f4CredentialOrigin === "CELULAR" && { color: colors.brandPrimary }]}>CELULAR</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => onF4CredentialOriginChange("SERVIDOR")}
+                  style={({ pressed }) => [
+                    styles.secondaryButton,
+                    f4CredentialOrigin === "SERVIDOR" && { backgroundColor: colors.brandTertiary },
+                    pressed && styles.buttonPressed,
+                  ]}
+                >
+                  <MaterialCommunityIcons name="server" size={16} color={f4CredentialOrigin === "SERVIDOR" ? colors.brandPrimary : colors.muted} />
+                  <Text style={[styles.secondaryButtonText, f4CredentialOrigin === "SERVIDOR" && { color: colors.brandPrimary }]}>SERVIDOR</Text>
+                </Pressable>
+              </View>
+            </View>
+            {f4CredentialOrigin === "CELULAR" && (
+              <View style={[styles.metricRow, { borderBottomWidth: 0 }]}>
+                <MaterialCommunityIcons name="shield-lock-outline" size={14} color={colors.muted} />
+                <Text style={[styles.metricValue, { color: colors.muted, marginLeft: 6 }]}>A chave fica só neste celular, no cofre do Android.</Text>
+              </View>
+            )}
+          </View>
+
+          {f4CredentialOrigin === "CELULAR" && !apiKey && (
+            <View style={[styles.routeBanner, { backgroundColor: colors.error + "15", borderColor: colors.error }]}>
+              <MaterialCommunityIcons name="key-variant" size={20} color={colors.error} />
+              <View style={styles.routeCopy}>
+                <Text style={[styles.routeTitle, { color: colors.error }]}>Chave necessária</Text>
+                <Text style={styles.routeDescription}>Salve a chave da OpenAI na área da Fase 3 para usar o intérprete.</Text>
+              </View>
+            </View>
+          )}
+
+          <View style={styles.diagnosticCard}>
+            <View style={styles.metricRow}>
               <Text style={styles.metricLabel}>SERVIDOR</Text>
               <TextInput
                 style={{ color: colors.onSurface, fontSize: 13, flex: 1, textAlign: "right" }}
@@ -1091,7 +1148,12 @@ function TestScreen({
               <Pressable
                 accessibilityRole="button"
                 onPress={onF4Connect}
-                style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed]}
+                disabled={f4CredentialOrigin === "CELULAR" && !apiKey}
+                style={({ pressed }) => [
+                  styles.primaryButton,
+                  (f4CredentialOrigin === "CELULAR" && !apiKey) && styles.disabledButton,
+                  pressed && styles.buttonPressed,
+                ]}
               >
                 <MaterialCommunityIcons name="connection" size={24} color={colors.onBrandPrimary} />
                 <Text style={styles.primaryButtonText}>CONECTAR INTÉRPRETE</Text>
