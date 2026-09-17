@@ -1,236 +1,128 @@
-# Tarefas — V6 AI Voice Bridge
+# Tarefas — Escuta Aí
 
-Objetivo: conversar por voz com uma IA (OpenAI / Gemini, provedor trocável) e
-ouvir a resposta nos DOIS V6 Plus pelo Music Sharing. Tradução é uma função em
-cima disso. Cada fase só começa se o teste físico da anterior passar.
+Produto: dois aplicativos Android que deixam o piloto e o turista da garupa
+conversarem em idiomas diferentes, cada um com seu próprio intercomunicador V6
+Plus e seu próprio celular. Cada pessoa ouve, no fone do capacete, só a
+tradução do que o outro disse, e lê o mesmo texto na tela.
 
-Regra número 1: toda voz do app sai como ÁUDIO DE MÍDIA (`USAGE_MEDIA`), nunca
-como chamada (`MODE_IN_COMMUNICATION`, `STREAM_VOICE_CALL`,
-`USAGE_VOICE_COMMUNICATION`, SCO forçado, VoIP).
-Não fazer: login, cadastro, assinatura, pagamento, painel, landing, perfil,
-Play Store. Chave de API nunca dentro do APK.
+- `Escuta Aí Piloto` — o celular do Douglas. Tem a conversa e, escondido, o
+  diagnóstico.
+- `Escuta Aí Turista` — o celular que ele entrega na garupa. Só bandeira,
+  conversa e texto.
 
-Como gerar o APK: push na branch `build-android` dispara
-`.github/workflows/android-apk.yml` (~25 min); o APK sai como artefato
-`v6-app-apk`. A Expo (EAS) também está configurada, mas a fila grátis passa de 40 min.
+Os dois celulares são do Douglas, configurados por ele antes do passeio.
 
-Histórico de decisões:
-- 17/09/2026 — FASE 1 APROVADA: TTS com `USAGE_MEDIA` + `CONTENT_TYPE_SPEECH`
-  saiu nos dois V6 Plus (Samsung, teste do Douglas).
-- 17/09/2026 — FASE 2 APROVADA: gravação do microfone interno tocada como mídia
-  saiu nos dois V6 Plus. Tags: phase-1-v6-media-validated, phase-2-mic-validated.
-- Capturar o áudio do app oficial ChatGPT/Gemini: INVIÁVEL. A captura de áudio
-  de outros apps só pega áudio de mídia/jogo/desconhecido; a voz desses apps é
-  comunicação. Segue com a IA dentro do nosso app.
+## Arquitetura decidida (17/09/2026)
+
+```
+piloto fala (pt-BR)
+  → V6 do piloto (microfone, perfil de chamada)
+  → celular do piloto: detecta fim da fala, transcreve, traduz
+  → SALA (só texto) na Cloudflare
+  → celular do turista: fala em inglês com a voz do Android e mostra o texto
+  → V6 do turista
+```
+E o caminho inverso, do mesmo jeito. Ninguém aperta botão por frase.
+
+Decisões e o porquê:
+- **A sala carrega texto, não voz.** Áudio entre celulares gastaria dados,
+  somaria atraso e cairia com sinal fraco de estrada. Texto é minúsculo.
+- **Cada celular fala com a IA por conta própria.** Mandar áudio de um aparelho
+  para o outro seria mais lento e mais caro.
+- **Uma conta só, na OpenRouter** (o Douglas já tem crédito lá): transcrição e
+  tradução. A Groq fica como reserva, com o código preparado para trocar.
+- **Voz do Android no MVP**, que é gratuita, funciona sem internet e já foi
+  validada na Fase 1. Voz natural paga fica para depois, atrás de uma chave.
+- **Turnos livres**: qualquer um pode falar a qualquer momento. Travar a vez
+  fica como opção para depois, se atrapalhar na prática.
+- **Music Sharing sai do desenho.** Ele só era necessário quando um celular
+  servia os dois capacetes. Com um V6 por celular, o V6 é um fone com
+  microfone comum — e some o conflito que travou o projeto até aqui.
+
+O que sobrevive do trabalho já feito: o módulo nativo Kotlin (voz como mídia,
+captura contínua em PCM, diagnóstico de rota), validado no aparelho nas Fases 1
+e 2. O que fica só no histórico do Git: as telas de teste das Fases 1 a 4 e a
+sessão Realtime da OpenAI (branch `fase4-realtime`, tags
+`phase-1-v6-media-validated` e `phase-2-mic-validated`).
+
+## Regras do produto
+
+- Nenhuma chave em código, em arquivo versionado ou no APK. A chave da
+  OpenRouter é digitada uma vez em cada celular e guardada no cofre do Android.
+- Sem login, sem cadastro, sem pagamento, sem loja de aplicativos.
+- A tela do turista nunca mostra ajuste técnico, log ou nome de modelo.
+- Idiomas do MVP: português (Brasil), inglês, espanhol e francês.
+- Nada de gravação permanente de áudio. O texto da conversa vive só na sessão.
+
+## Ainda não medido (só o teste físico responde)
+
+1. Se o V6 entrega a voz ao celular com o capacete fechado, em cidade e devagar.
+2. Se, com o microfone do V6 em uso, a voz do app sai no V6 ou no alto-falante
+   do celular — e, se sair errado, qual ajuste de rota corrige.
+3. Quanto tempo passa entre a pessoa parar de falar e o outro ouvir a tradução.
 
 ---
 
-Pontos de volta: tags `phase-1-v6-media-validated` e `phase-2-mic-validated`;
-APK da Fase 1 em `_descartavel/apk/fase1-validado.apk`, da Fase 2 em `_descartavel/apk2/`.
+## [~] 1. Sala de texto na Cloudflare
 
-## [>] 3. Fase 3 — OpenAI por botão (ENTREGUE, aguardando teste físico; vira ferramenta de diagnóstico)
+TAREFA: sala-cloudflare
+OBJETIVO: um endereço na internet onde os dois celulares se encontram e trocam
+mensagens de texto na hora, funcionando em qualquer lugar com internet móvel.
+ARQUIVOS: `sala/` (novo, na raiz do projeto).
+REGRAS: Worker com Durable Object, conexão por WebSocket, uma sala fixa por
+código combinado; a mensagem carrega quem falou, o idioma de origem, o idioma
+de destino e o texto traduzido; nada de áudio; nada de guardar histórico.
+CASOS DE BORDA: celular perde o sinal → reconecta sozinho e avisa na tela;
+mensagem chega e o outro não está conectado → é descartada, com aviso local.
+PRONTO QUANDO: os dois celulares trocam texto pela internet móvel, um fora da
+rede do outro, e o texto aparece em menos de 1 segundo.
+FORA DE ESCOPO: conta de usuário, várias salas, histórico, áudio.
+PENDENTE DO DOUGLAS: criar a conta gratuita na Cloudflare.
 
-TAREFA: fase3-interprete
-OBJETIVO: falar segurando um botão e ouvir, nos dois V6, a mesma fala
-interpretada no outro idioma (português do Brasil ⇄ inglês), passando por
-gravação → OpenAI → voz → áudio de MÍDIA. A IA interpreta, nunca responde.
-ARQUIVOS:
-- `frontend/src/openai/*` (novo: cliente HTTP, provedor, intérprete)
-- `frontend/src/audio/mediaTts.ts` (tocar arquivo de áudio recebido, se preciso)
-- `frontend/modules/v6-media-tts/android/.../V6MediaTtsModule.kt` (tocar um
-  arquivo de caminho arbitrário como mídia; reaproveitar o player da Fase 2)
-- `frontend/app/index.tsx` (área FASE 3)
-- nada em `android/` além do que já existe (INTERNET já está no manifesto)
+## [ ] 2. Motor de conversa no celular
 
-PIPELINE ESCOLHIDO (conferido na documentação da OpenAI em 17/09/2026):
-1. Transcrever: `POST https://api.openai.com/v1/audio/transcriptions`,
-   multipart com `file` (o m4a da gravação) e `model=gpt-transcribe`.
-   A resposta traz `text` e `languages: [{code}]` (vazio quando não há certeza).
-2. Interpretar: `POST https://api.openai.com/v1/responses`,
-   `model=gpt-5.6-luna`, com a instrução de sistema do dono (abaixo) e o texto
-   transcrito. Saída: só a frase interpretada.
-3. Gerar voz: `POST https://api.openai.com/v1/audio/speech`,
-   `model=gpt-4o-mini-tts`, `voice=alloy`, `response_format=mp3`, salvar em
-   cache e tocar pelo caminho de MÍDIA já validado.
+TAREFA: motor-conversa
+OBJETIVO: o celular ouve pelo V6, percebe quando a pessoa parou de falar,
+transcreve, traduz e manda o texto para a sala; e, ao receber texto da sala,
+fala com a voz do Android e mostra na tela.
+ARQUIVOS: módulo Kotlin existente (acrescentar o que faltar), mais
+`frontend/src/conversa/` (novo).
+REGRAS: microfone pelo V6; fim de fala detectado no próprio aparelho por
+silêncio, com sensibilidade ajustável; transcrição e tradução pela OpenRouter,
+com o provedor trocável; voz pelo mecanismo do Android, como já é feito hoje;
+enquanto a voz da IA toca, o microfone do mesmo aparelho é ignorado.
+CASOS DE BORDA: fala curta demais → descarta; sem internet → avisa e guarda a
+vez; transcrição vazia → não fala nada; erro do provedor → mensagem simples.
+PRONTO QUANDO: falando em português no celular A, o celular B fala em inglês, e
+o contrário também, com os dois usando V6.
+FORA DE ESCOPO: voz paga, biometria de voz, vários idiomas ao mesmo tempo.
 
-INSTRUÇÃO DE SISTEMA (usar este texto):
-"You are a live interpreter between Brazilian Portuguese and English. If the
-speaker uses Brazilian Portuguese, interpret their speech naturally into
-English. If the speaker uses English, interpret their speech naturally into
-Brazilian Portuguese. Preserve meaning, intent, questions, numbers, names,
-places, prices and relevant tone. Do not answer the speaker's questions. Do
-not provide explanations. Do not add information. Do not say that you are
-translating. Return only the interpreted utterance."
+## [ ] 3. Tela da conversa (os dois aplicativos)
 
-CHAVE DA OPENAI (decisão do assistente, 17/09/2026): nenhuma chave no código,
-no APK ou no Git. O dono digita a chave uma vez na própria tela do app e ela é
-guardada em `expo-secure-store` (já instalado), que usa o cofre do Android.
-Campo de senha (texto escondido), botão "Salvar chave" e "Apagar chave".
-A chave nunca aparece no log, nem em mensagem de erro, nem na tela depois de
-salva (mostrar só "sk-…" com os 4 últimos). Para distribuir o app a outras
-pessoas no futuro, a chave sai do aparelho e vai para um servidor
-intermediário — fora do escopo desta fase.
+TAREFA: telas
+OBJETIVO: telas grandes, legíveis com capacete, sem interação durante o passeio.
+- Turista: escolha do idioma por bandeira (Brasil, Reino Unido, Espanha,
+  França), estado da conversa e o texto do que foi dito e traduzido.
+- Piloto: o mesmo, mais um acesso escondido ao diagnóstico e à chave.
+REGRAS: tema escuro, alto contraste, letras grandes, sem digitação durante o
+passeio; a escolha do turista chega ao celular do piloto pela sala.
+PRONTO QUANDO: o Douglas entrega o celular ao turista, ele toca na bandeira e a
+conversa começa a funcionar sem mais nenhum toque.
 
-REGRAS APLICÁVEIS:
-- NÃO QUEBRAR as Fases 1 e 2: nenhuma linha alterada no `speak`, `stop`,
-  `prepare`, gravação e reprodução da gravação; as duas áreas continuam na tela.
-- Saída sempre `USAGE_MEDIA` + `CONTENT_TYPE_SPEECH`, com foco de áudio como na
-  Fase 2. PROIBIDO: `startBluetoothSco`, `setCommunicationDevice`, mudar
-  `AudioManager.mode`, `STREAM_VOICE_CALL`, `USAGE_VOICE_COMMUNICATION`,
-  `AudioSource.VOICE_COMMUNICATION`, microfone Bluetooth.
-- Microfone: o interno do celular, como na Fase 2.
-- Estados: PRONTO → OUVINDO → PROCESSANDO → TRANSCREVENDO → INTERPRETANDO →
-  GERANDO VOZ → REPRODUZINDO → PRONTO. Enquanto reproduz, não aceita gravar.
-- Push To Talk: [SEGURE PARA FALAR] (`onPressIn`/`onPressOut`); soltar encerra a
-  gravação e dispara o resto sozinho. Sem gravação contínua, sem detecção de voz.
-- Na tela, para depuração: idioma detectado, "OUVIDO: …" e "INTERPRETAÇÃO: …".
-- Tempos medidos e mostrados: transcrição, IA, voz, total (ms), e no log as
-  marcas de início/fim de cada etapa.
-- Incerteza: `languages` vazio ou texto vazio → "Não foi possível entender." e
-  NÃO gerar voz nenhuma. Nunca inventar frase.
-- Sem internet → "Sem conexão com a internet." e volta para PRONTO.
-- Erro da OpenAI → mensagem curta na tela, código HTTP no log, sem segredo.
-  Nunca derrubar o app.
-- Módulos separados: cliente da OpenAI, intérprete (regras/prompt), captura,
-  saída de mídia, diagnóstico e máquina de estados em arquivos distintos.
+## [ ] 4. Dois aplicativos a partir do mesmo código
 
-CASOS DE BORDA: chave ausente → a área pede a chave e o botão fica desabilitado;
-chave inválida (401) → "Chave recusada pela OpenAI"; gravação de menos de 1 s →
-descarta e avisa; soltar o botão depois de sair da tela → cancela; resposta de
-voz vazia → erro tratado; web → "Disponível só no APK Android".
+TAREFA: dois-apps
+OBJETIVO: gerar `Escuta Aí Piloto` e `Escuta Aí Turista`, que convivem
+instalados sem se confundir (identificadores e ícones diferentes).
+PRONTO QUANDO: os dois APKs saem do mesmo build do GitHub e instalam juntos.
 
-PRONTO QUANDO:
-1. `node_modules/.bin/tsc --noEmit` sem erro.
-2. Busca no código não acha item proibido nem `sk-` literal.
-3. `git diff` não toca o código das Fases 1 e 2.
-4. Build do GitHub verde e APK baixado.
-5. Teste físico do dono: (a) Fases 1 e 2 continuam saindo nos dois V6;
-   (b) "Olá, seja bem-vindo ao Rio de Janeiro." → sai em inglês nos dois V6;
-   (c) "How long does the tour take?" → sai em português;
-   (d) "Where are we going now?" → sai interpretado, não respondido;
-   (e) "The tour costs 150 reais." → preserva 150 reais;
-   (f) nomes Rocinha, Vidigal, Cristo Redentor, Copacabana, Ipanema preservados.
+## [ ] 5. Sobreviver com a tela apagada
 
-FORA DE ESCOPO: Gemini, Realtime, microfone sempre aberto, detecção de voz,
-palavra de ativação, full duplex, segundo plano, outros idiomas, login,
-pagamento, histórico, Play Store, servidor intermediário.
+TAREFA: primeiro-plano
+OBJETIVO: a conversa continua com o celular no bolso e a tela apagada.
+REGRAS: serviço em primeiro plano com notificação e ação de encerrar.
+PRONTO QUANDO: 15 minutos de tela apagada sem perder fala nenhuma.
 
-
-## [ ] 4. Diagnóstico extra
-Foco de áudio no painel, estado A2DP, "indisponível" onde a API não dá.
-
-## [ ] 6. Fase 5 — otimização e distribuição
-Latência, ruído, telas para uso na moto, idiomas extras, microfone Bluetooth
-experimental, servidor intermediário para a chave da OpenAI sair do aparelho.
-
-## [~] 7. Fase 4 — IA intérprete em conversa contínua (OpenAI Realtime)
-
-CORREÇÃO DE RUMO (Douglas, 17/09/2026): o produto não é tradutor de frases nem
-assistente. É uma intérprete que fica NO MEIO de uma conversa presencial —
-DOUGLAS ⇄ IA ⇄ JOHN — ouvindo sempre, detectando sozinha quando cada um parou
-de falar, e falando a interpretação. A Fase 3 (botão SEGURE PARA FALAR) fica
-apenas como ferramenta de diagnóstico; a conversa por turnos é o produto.
-Os dois V6 ouvem a MESMA voz da intérprete: não existem canais separados.
-
-TAREFA: fase4-realtime
-OBJETIVO: uma sessão de conversa em que ninguém aperta botão por frase. A IA
-identifica quem falou pelo idioma, anuncia ("John disse: …", "Douglas said: …")
-e fala a interpretação pelo caminho de mídia já validado, saindo nos dois V6.
-
-API REAL (conferida na documentação da OpenAI em 17/09/2026):
-- Modelo: `gpt-realtime-2.1`.
-- Conexão do aparelho: WebSocket `wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1`.
-- Credencial temporária para cliente móvel: o backend chama
-  `POST /v1/realtime/client_secrets` com a chave secreta e devolve só o segredo
-  temporário ao app. A chave permanente NUNCA sai do servidor.
-- Configuração por evento `session.update`: `session.audio.input` (formato pcm16,
-  24000 Hz) e `session.audio.output`; detecção de turno
-  `turn_detection: { type: "semantic_vad" }`, que espera a pessoa terminar a
-  frase em vez de cortar em pausa curta.
-- Áudio de entrada vai em `input_audio_buffer.append` (pedaços em base64).
-- Áudio de saída chega em pedaços; tocar conforme chega, com folga de buffer.
-
-ARQUITETURA (o que precisa ser escrito, separado por responsabilidade):
-- Kotlin, captura: `AudioRecord` em 24000 Hz, mono, PCM 16 bits, fonte MIC do
-  celular (não o microfone do V6), mandando pedaços em base64 por evento para o JS.
-- Kotlin, saída: `AudioTrack` em modo fluxo com `AudioAttributes` `USAGE_MEDIA`
-  + `CONTENT_TYPE_SPEECH` (o `MediaPlayer` de arquivo não serve para fluxo).
-  MESMO pedido de foco de áudio da Fase 2.
-- JS: sessão Realtime (WebSocket), máquina de estados, diagnóstico, tela.
-- Backend (`backend/server.py`, FastAPI já existente): uma rota nova que cria a
-  credencial temporária. A chave fica em variável de ambiente no servidor.
-
-ESTADOS: DESCONECTADO → CONECTANDO → OUVINDO → PESSOA FALANDO → INTERPRETANDO →
-IA FALANDO → OUVINDO, mais ERRO. A tela mostra o estado atual em texto grande.
-
-ANTI-LOOP: enquanto a IA fala, o app PARA de mandar áudio do microfone (não
-manda e ainda descarta o que chegar). Volta a mandar quando a fala termina, com
-um intervalo curto configurável. Full duplex não é objetivo agora.
-
-INSTRUÇÃO DA SESSÃO: a intérprete anuncia quem falou, interpreta natural, não
-responde pergunta de ninguém, não opina, não inventa, não diz que é IA, não
-explica a tradução; preserva nomes, números, preços, horários, lugares,
-perguntas, intenção e contexto. Nomes e idiomas vêm da configuração da tela.
-
-CONFIGURAÇÃO NA TELA: meu nome (Douglas), meu idioma (pt-BR), nome do turista
-(John), idioma do turista (en-US). Botão [CONECTAR INTÉRPRETE] / [ENCERRAR].
-As áreas das Fases 1, 2 e 3 continuam na tela, para achar regressão.
-
-IDENTIFICAÇÃO DE QUEM FALA: pelo idioma da fala, nesta fase. Sem biometria de
-voz. Ambíguo → não inventa nome; o código fica preparado para melhorar isso.
-
-DIAGNÓSTICO: modo de áudio do Android, entrada, saída, rota Bluetooth, taxa de
-amostragem, tamanho de buffer, estado da sessão Realtime, estado do detector de
-fala, início/fim de fala, início/fim da resposta, início/fim da reprodução,
-erros de rede e reconexões. Nunca a chave nem o segredo temporário.
-
-LATÊNCIA: marcar horário de fala iniciada, fala encerrada, envio, resposta
-iniciada, primeiro áudio recebido, primeiro áudio tocado, resposta concluída. O
-número que importa: fim da fala da pessoa → primeiro áudio da interpretação.
-
-REGRAS APLICÁVEIS: proibido `MODE_IN_COMMUNICATION`, `STREAM_VOICE_CALL`,
-`USAGE_VOICE_COMMUNICATION`, Bluetooth SCO/HFP, microfone do V6 e qualquer API
-de voz que escolha a saída sozinha. A saída é sempre o caminho de mídia já
-validado. Não redesenhar o app, não reescrever o que existe, não quebrar as
-Fases 1, 2 e 3.
-
-PRONTO QUANDO:
-1. Busca no código não acha item proibido nem chave/segredo.
-2. Tipos sem erro; build do GitHub verde; APK entregue com o caminho informado.
-3. Fases 1, 2 e 3 continuam na tela e funcionando.
-4. Teste físico: John fala "Where are we going now?" → a IA fala "John disse:
-   Para onde estamos indo agora?" nos dois V6; Douglas responde "Agora nós vamos
-   para a Rocinha." → a IA fala "Douglas said: Now we're going to Rocinha." nos
-   dois V6; a conversa segue sem apertar botão por frase.
-
-FORA DE ESCOPO: Gemini, Google Tradutor, login, pagamento, painel, histórico
-permanente, GPS, mapas, vários turistas, biometria de voz, palavra de ativação,
-microfone Bluetooth, full duplex avançado, Play Store.
-
-PENDENTE DE DECISÃO DO DOUGLAS (bloqueia o começo):
-- Onde o backend vai rodar (ele precisa estar no ar para o app pegar a
-  credencial temporária): computador dele na rede local, ou serviço na nuvem.
-- A chave secreta da OpenAI, colocada por ele na variável de ambiente do servidor.
-
-## [~] 8. Fase 4b — chave no celular, sem depender do servidor
-
-Motivo (Douglas, 17/09/2026): o app é pessoal, não vai ser comercializado nem
-distribuído. Então a chave da OpenAI pode viver no cofre do Android do próprio
-aparelho (como já acontece na Fase 3), e a conversa contínua passa a funcionar
-em qualquer lugar com a internet do celular, sem computador ligado.
-
-TAREFA: fase4b-chave-local
-OBJETIVO: na área FASE 4, escolher a origem da credencial: CELULAR (padrão, usa
-a chave guardada no cofre) ou SERVIDOR (o backend local, que já funciona).
-ARQUIVOS: `frontend/src/realtime/session.ts`, `frontend/src/realtime/interpreter.ts`,
-`frontend/src/realtime/state.ts`, `frontend/app/index.tsx`.
-REGRAS: com origem CELULAR, o WebSocket usa a chave do cofre no lugar do segredo
-temporário (mesmo formato de subprotocolo); a chave nunca aparece em log, tela
-ou erro. Com origem SERVIDOR, nada muda. O backend continua no repositório.
-O aviso na tela deixa claro: "a chave fica só neste celular".
-CASOS DE BORDA: sem chave salva → botão desabilitado e texto pedindo a chave
-(reaproveitar o campo da Fase 3); chave recusada (401) → "Chave recusada pela
-OpenAI"; origem SERVIDOR sem servidor no ar → "Servidor local não respondeu".
-PRONTO QUANDO: tipos sem erro; nenhuma chave em log; build verde; APK entregue;
-teste físico do Douglas com a origem CELULAR, fora do Wi-Fi de casa.
-FORA DE ESCOPO: servidor na internet, distribuição para outras pessoas.
+## [ ] 6. Depois do MVP
+Voz natural paga como opção; travar a vez se as falas se atropelarem; mais
+idiomas; reduzir atraso; microfone por cabo USB-C, se o vento atrapalhar.
