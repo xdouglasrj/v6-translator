@@ -23,40 +23,102 @@ Histórico de decisões:
 
 ---
 
-## [~] 1. Fase 2 — microfone do celular
+Ponto de volta: tag local `phase-1-v6-media-validated` (commit `5b1ba19`) e
+cópia do APK validado em `_descartavel/apk/fase1-validado.apk`.
 
-TAREFA: teste-microfone
-OBJETIVO: gravar 5 s pelo microfone do próprio celular e tocar a gravação como
-mídia, provando que usar o microfone não derruba o compartilhamento nos dois V6.
-ARQUIVOS: `frontend/modules/v6-media-tts/android/.../V6MediaTtsModule.kt`
-(gravar e tocar), `frontend/app/index.tsx` (terceira aba "Microfone"),
-`frontend/app.json` (permissão `RECORD_AUDIO`).
+## [~] 1. Fase 2 — microfone interno sem quebrar o áudio dos dois V6
+
+TAREFA: fase2-microfone
+OBJETIVO: gravar 5 s pelo microfone INTERNO do Samsung e tocar a gravação como
+mídia, provando que usar o microfone não derruba o Music Sharing. Junto, o
+diagnóstico passa a mostrar a rota real antes/durante/depois, para achar o
+momento exato de uma eventual troca.
+ARQUIVOS:
+- `frontend/modules/v6-media-tts/android/src/main/java/expo/modules/v6mediatts/V6MediaTtsModule.kt`
+  (gravar, tocar, diagnóstico, eventos de rota)
+- `frontend/modules/v6-media-tts/src/*` (tipos/ponte JS do módulo, se existirem)
+- `frontend/app/index.tsx` (nova área FASE 2 e campos novos do diagnóstico)
+- `frontend/app.json` (permissão `RECORD_AUDIO`)
+- `frontend/android/app/src/main/AndroidManifest.xml` (mesma permissão; a
+  pasta `android` é versionada e o build usa ela, não o `app.json`)
+
 REGRAS APLICÁVEIS:
-- Gravação com `MediaRecorder`/`AudioRecord` na fonte `MIC` (microfone do
-  celular); proibido `VOICE_COMMUNICATION`, `startBluetoothSco`,
-  `setCommunicationDevice`, mudar `AudioManager.mode`.
-- Reprodução com `MediaPlayer` + `AudioAttributes` `USAGE_MEDIA`.
-- Arquivo em pasta de cache do app, apagado ao gravar de novo e ao sair; nada
-  guardado para sempre.
-- Aviso antes de pedir permissão: "O aplicativo usa o microfone para gravar um
-  teste de 5 segundos. A gravação fica só no celular e é apagada depois."
-- Diagnóstico registra no log com horário: início/fim da gravação, modo do
-  AudioManager antes e depois, rota de saída antes e depois.
-TELA: "TESTE DE MICROFONE" · "Microfone selecionado: CELULAR" · botão
-[GRAVAR 5 SEGUNDOS] (contagem regressiva) · botão [REPRODUZIR GRAVAÇÃO]
-(desabilitado sem gravação) · [PARAR].
-CASOS DE BORDA: permissão negada → mensagem e botão para abrir as
-configurações; gravar durante reprodução → para a reprodução antes; app sai
-de cena durante gravação → cancela e apaga.
-PRONTO QUANDO: build no GitHub verde; no código não existe nenhum dos itens
-proibidos (conferido por busca); APK instalado grava e toca; o log mostra o
-modo `MODE_NORMAL` antes e depois; Douglas confirma que a gravação sai nos
-dois V6.
-FORA DE ESCOPO: microfone Bluetooth, reconhecimento de fala, IA.
+- NÃO QUEBRAR A FASE 1. O `speak`/`stop`/`prepare` e o botão REPRODUZIR TESTE
+  ficam como estão (mesmo `USAGE_MEDIA` + `CONTENT_TYPE_SPEECH` +
+  `STREAM_MUSIC`). Nada de redesenho de tela.
+- Microfone: `MediaRecorder` com `AudioSource.MIC`; em Android 6+ escolher o
+  microfone interno com `setPreferredDevice(TYPE_BUILTIN_MIC)` quando existir.
+- PROIBIDO no código: `startBluetoothSco`, `setBluetoothScoOn`,
+  `setCommunicationDevice`, `setMode(`/`mode =`, `MODE_IN_COMMUNICATION`
+  (exceto como rótulo de leitura), `STREAM_VOICE_CALL`,
+  `USAGE_VOICE_COMMUNICATION`, `AudioSource.VOICE_COMMUNICATION`, escolher o
+  V6 como entrada.
+- Reprodução: `MediaPlayer` com `AudioAttributes` `USAGE_MEDIA` +
+  `CONTENT_TYPE_SPEECH`, pedindo foco de áudio `AUDIOFOCUS_GAIN_TRANSIENT`
+  com os mesmos atributos e devolvendo ao fim.
+- Sequencial, sem full duplex. Estados: IDLE → RECORDING (5 s, para sozinho)
+  → RECORDED → PLAYING_MEDIA → COMPLETED. Gravar com reprodução ativa para a
+  reprodução antes.
+- Arquivo só no cache privado do app (`cacheDir`), um arquivo só, substituído
+  ao gravar de novo. Nada permanente.
+- Permissão: só `RECORD_AUDIO` nova. Nenhuma outra (localização, arquivos,
+  contatos, telefone, SMS). Antes do pedido, aviso: "O aplicativo usa o
+  microfone para gravar um teste de 5 segundos. A gravação fica só no celular
+  e é substituída na próxima."
+- Diagnóstico real (o que a API não der → "indisponível", nunca inventar):
+  - ANTES da gravação: `AudioManager.mode`, entradas disponíveis, saídas
+    disponíveis, rota de saída atual, Bluetooth relevante, SCO.
+  - AO INICIAR: horário, entrada realmente usada
+    (`AudioRecordingConfiguration`/`MediaRecorder.getRoutedDevice` quando
+    houver), mode, rota.
+  - AO PARAR: horário, arquivo criado, duração, rota.
+  - ANTES DE TOCAR: mode, rota, atributos usados, resultado do pedido de foco.
+  - DURANTE: início/fim do player; troca de rota.
+  - Troca de rota detectada por `AudioDeviceCallback` → linha "ROUTE CHANGE
+    DETECTED · Antes: X · Agora: Y" com horário, em qualquer momento.
+- Log visual no formato `HH:MM:SS - texto`, em português simples na frente e o
+  nome técnico entre parênteses.
 
-## [ ] 2. Diagnóstico real mais completo
-Falta: foco de áudio, aviso com horário quando a rota muda (antes/depois),
-estado A2DP, "indisponível" onde a API não dá. Útil para a Fase 2 se algo mudar.
+TELA (acrescentar, sem redesenhar):
+```
+FASE 1 · TESTE DE MÍDIA      [REPRODUZIR TESTE]  (o que já existe)
+FASE 2 · TESTE DO MICROFONE
+MICROFONE: Interno do celular
+GRAVAÇÃO: Nenhuma / Gravando 3s… / Pronta
+SAÍDA: Media
+ROTA: <dado real>
+[GRAVAR 5 SEGUNDOS]  (vira [GRAVAR NOVAMENTE] depois da primeira)
+[REPRODUZIR GRAVAÇÃO] (desabilitado sem gravação)
+[PARAR]
+```
+
+CASOS DE BORDA:
+- Permissão negada → mensagem e botão para abrir as configurações do app.
+- Negada com "não perguntar de novo" → mesmo botão, sem novo pedido.
+- Celular sem `TYPE_BUILTIN_MIC` listado → grava com `MIC` padrão e registra
+  "microfone interno não identificado".
+- Entrada usada acaba sendo Bluetooth → registrar em destaque (resultado D).
+- App vai para segundo plano durante gravação → cancela e apaga o arquivo.
+- Foco de áudio negado → registra e não toca.
+- Web (preview) → módulo nativo ausente; área mostra "só no Android".
+
+PRONTO QUANDO:
+1. Build do GitHub (`build-android`) verde e APK baixado; caminho informado.
+2. Busca no código não acha nenhum item PROIBIDO fora de rótulo de leitura.
+3. Diff não altera o caminho do `speak` da Fase 1 (conferido na leitura).
+4. Manifesto do APK gerado tem `RECORD_AUDIO` e nenhuma permissão nova além dela.
+5. Versão web abre sem erro e mostra as duas áreas.
+6. Status final reportado como: IMPLEMENTAÇÃO CONCLUÍDA · BUILD CONCLUÍDO ·
+   APK GERADO · AGUARDANDO TESTE FÍSICO.
+7. Teste físico do Douglas, nesta ordem: (a) Fase 1 de novo nos dois V6;
+   (b) gravar "Teste do microfone. Um, dois, três."; (c) reproduzir.
+   Resultado A = aprovada. B (depois do microfone sai só em um V6), C (muda
+   ao começar a gravar) ou D (não usou o microfone interno) → investigar com
+   o log, sem mascarar.
+
+FORA DE ESCOPO: IA (OpenAI, ChatGPT, Gemini), tradução, reconhecimento de fala,
+Realtime, conversa contínua, detecção de voz, full duplex, microfone Bluetooth,
+Fase 3.
 
 ## [ ] 3. Fase 3 — IA por botão (Push To Talk)
 SEGURE PARA FALAR → reconhecimento → IA (resposta curta) → voz como mídia.
