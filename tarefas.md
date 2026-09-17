@@ -211,3 +211,26 @@ PENDENTE DE DECISÃO DO DOUGLAS (bloqueia o começo):
 - Onde o backend vai rodar (ele precisa estar no ar para o app pegar a
   credencial temporária): computador dele na rede local, ou serviço na nuvem.
 - A chave secreta da OpenAI, colocada por ele na variável de ambiente do servidor.
+
+## [~] 8. Fase 4b — chave no celular, sem depender do servidor
+
+Motivo (Douglas, 17/09/2026): o app é pessoal, não vai ser comercializado nem
+distribuído. Então a chave da OpenAI pode viver no cofre do Android do próprio
+aparelho (como já acontece na Fase 3), e a conversa contínua passa a funcionar
+em qualquer lugar com a internet do celular, sem computador ligado.
+
+TAREFA: fase4b-chave-local
+OBJETIVO: na área FASE 4, escolher a origem da credencial: CELULAR (padrão, usa
+a chave guardada no cofre) ou SERVIDOR (o backend local, que já funciona).
+ARQUIVOS: `frontend/src/realtime/session.ts`, `frontend/src/realtime/interpreter.ts`,
+`frontend/src/realtime/state.ts`, `frontend/app/index.tsx`.
+REGRAS: com origem CELULAR, o WebSocket usa a chave do cofre no lugar do segredo
+temporário (mesmo formato de subprotocolo); a chave nunca aparece em log, tela
+ou erro. Com origem SERVIDOR, nada muda. O backend continua no repositório.
+O aviso na tela deixa claro: "a chave fica só neste celular".
+CASOS DE BORDA: sem chave salva → botão desabilitado e texto pedindo a chave
+(reaproveitar o campo da Fase 3); chave recusada (401) → "Chave recusada pela
+OpenAI"; origem SERVIDOR sem servidor no ar → "Servidor local não respondeu".
+PRONTO QUANDO: tipos sem erro; nenhuma chave em log; build verde; APK entregue;
+teste físico do Douglas com a origem CELULAR, fora do Wi-Fi de casa.
+FORA DE ESCOPO: servidor na internet, distribuição para outras pessoas.
