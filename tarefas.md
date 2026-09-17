@@ -28,7 +28,7 @@ Histórico de decisões:
 Pontos de volta: tags `phase-1-v6-media-validated` e `phase-2-mic-validated`;
 APK da Fase 1 em `_descartavel/apk/fase1-validado.apk`, da Fase 2 em `_descartavel/apk2/`.
 
-## [~] 3. Fase 3 — OpenAI como intérprete de voz (Push To Talk)
+## [>] 3. Fase 3 — OpenAI por botão (ENTREGUE, aguardando teste físico; vira ferramenta de diagnóstico)
 
 TAREFA: fase3-interprete
 OBJETIVO: falar segurando um botão e ouvir, nos dois V6, a mesma fala
@@ -118,13 +118,6 @@ pagamento, histórico, Play Store, servidor intermediário.
 
 ## [ ] 4. Diagnóstico extra
 Foco de áudio no painel, estado A2DP, "indisponível" onde a API não dá.
-
-## [ ] 5. Fase 4 — conversa automática
-INICIAR/ENCERRAR; estados OUVINDO → FALA DETECTADA → PROCESSANDO → FALANDO;
-detecção de voz com sensibilidade ajustável; não mandar a própria voz de volta
-para a IA; serviço em primeiro plano com notificação e ação PARAR; retomar após
-erro; avisos "Sem conexão" e "Bluetooth desconectado"; avaliar Realtime da
-OpenAI para cortar latência.
 
 ## [ ] 6. Fase 5 — otimização e distribuição
 Latência, ruído, telas para uso na moto, idiomas extras, microfone Bluetooth
