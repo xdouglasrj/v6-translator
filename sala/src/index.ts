@@ -11,6 +11,7 @@ interface DadosConexao {
   papel: string;
   idioma: string;
   cheia?: boolean;
+  visto: number;
 }
 
 // Mensagens recebidas
@@ -281,9 +282,19 @@ export class Sala {
       return Response.json({ ok: true });
     }
 
-    // Verificar limite de conexões
+    // Verificar limite de conexões - limpar conexões mortas primeiro
+    const agora = Date.now();
     const conexoesAtuais = this.state.getWebSockets();
-    if (conexoesAtuais.length >= 2) {
+    let conexoesVivas = 0;
+    for (const ws of conexoesAtuais) {
+      const dados = ws.deserializeAttachment() as DadosConexao | null;
+      if (dados && !dados.cheia && dados.visto && agora - dados.visto <= 90000) {
+        conexoesVivas++;
+      } else if (dados && !dados.cheia) {
+        ws.close(4003, "sem sinal");
+      }
+    }
+    if (conexoesVivas >= 2) {
       const pair = new WebSocketPair();
       const [client, server] = [pair[0], pair[1]];
       this.state.acceptWebSocket(server);
@@ -300,6 +311,10 @@ export class Sala {
 
     // Aceitar com hibernação
     this.state.acceptWebSocket(server);
+    const alarmAtual = await this.state.storage.getAlarm();
+    if (alarmAtual === null) {
+      await this.state.storage.setAlarm(Date.now() + 30000);
+    }
 
     return new Response(null, {
       status: 101,
@@ -344,6 +359,13 @@ export class Sala {
         JSON.stringify({ tipo: "erro", motivo: "mensagem invalida" })
       );
       return;
+    }
+
+    // Atualizar visto em toda mensagem válida
+    const dados = this.obterDados(ws);
+    if (dados) {
+      dados.visto = Date.now();
+      ws.serializeAttachment(dados);
     }
 
     switch (mensagem.tipo) {
@@ -409,7 +431,7 @@ export class Sala {
     }
   }
 
-  private manejarEntrar(
+  private async manejarEntrar(
     ws: WebSocket,
     mensagem: MensagemEntrar
   ): void {
@@ -441,8 +463,13 @@ export class Sala {
     const dados: DadosConexao = {
       papel: mensagem.papel,
       idioma: mensagem.idioma,
+      visto: Date.now(),
     };
     ws.serializeAttachment(dados);
+    const alarmAtual = await this.state.storage.getAlarm();
+    if (alarmAtual === null) {
+      await this.state.storage.setAlarm(Date.now() + 30000);
+    }
 
     // Avisar o outro lado sobre a presença
     const outro = this.obterOutroConexao(ws);
@@ -516,6 +543,7 @@ export class Sala {
     }
 
     dados.idioma = mensagem.idioma;
+    dados.visto = Date.now();
     ws.serializeAttachment(dados);
 
     const outro = this.obterOutroConexao(ws);
@@ -536,5 +564,25 @@ export class Sala {
     mensagem: MensagemPing
   ): void {
     ws.send(JSON.stringify({ tipo: "pong", em: mensagem.em ?? Date.now() }));
+  }
+
+  async alarm(): Promise<void> {
+    const agora = Date.now();
+    const conexoes = this.state.getWebSockets();
+    let temViva = false;
+    for (const ws of conexoes) {
+      const dados = ws.deserializeAttachment() as DadosConexao | null;
+      if (dados && !dados.cheia && dados.visto && agora - dados.visto <= 90000) {
+        temViva = true;
+      } else if (dados && !dados.cheia) {
+        ws.close(4003, "sem sinal");
+      }
+    }
+    if (temViva) {
+      const alarmAtual = await this.state.storage.getAlarm();
+      if (alarmAtual === null) {
+        await this.state.storage.setAlarm(agora + 30000);
+      }
+    }
   }
 }

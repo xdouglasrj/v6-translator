@@ -33,9 +33,11 @@ let _callbacks: SalaCallbacks = {};
 let _salaCodigo = "";
 let _papel: Papel = "piloto";
 let _idioma: IdiomaCodigo = "pt-BR";
+let _idiomaOutro: IdiomaCodigo | null = null;
 let _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let _reconnectDelay = 0;
 let _encerrado = false;
+let _bloqueado = false;
 
 export function conectar(
   codigo: string,
@@ -45,10 +47,12 @@ export function conectar(
 ) {
   encerrar();
   _encerrado = false;
+  _bloqueado = false;
   _callbacks = callbacks;
   _salaCodigo = codigo;
   _papel = papel;
   _idioma = idioma;
+  _idiomaOutro = null;
   fila = [];
   _reconnectDelay = 0;
 
@@ -68,6 +72,17 @@ export function conectar(
   ws.onmessage = (evt) => {
     try {
       const msg = JSON.parse(evt.data as string) as MensagemRecebida;
+      if (msg.tipo === "presenca") {
+        _idiomaOutro = msg.conectado ? msg.idioma : null;
+      } else if (msg.tipo === "erro" && msg.motivo === "sala cheia") {
+        _bloqueado = true;
+        limparPing();
+        if (ws) {
+          ws.onclose = null;
+          ws.close();
+          ws = null;
+        }
+      }
       callbacks.onMensagem?.(msg);
     } catch {
       // mensagem inválida
@@ -78,7 +93,7 @@ export function conectar(
     limparPing();
     if (!_encerrado) {
       callbacks.onDesconexao?.(evt.code, evt.reason);
-      tentarReconectar();
+      if (!_bloqueado) tentarReconectar();
     }
   };
 
@@ -135,6 +150,10 @@ export function obterHost(): string {
   return SALA_HOST_PADRAO;
 }
 
+export function idiomaDoOutro(): IdiomaCodigo | null {
+  return _idiomaOutro;
+}
+
 function enviar(msg: MensagemSala) {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(msg));
@@ -149,6 +168,10 @@ function limparPing() {
 }
 
 async function interpretar(base64: string, formato: string) {
+  if (!_idiomaOutro) {
+    _callbacks.onErro?.("Ninguém do outro lado ainda");
+    return;
+  }
   try {
     const resp = await fetch(`${SALA_HOST_PADRAO}/interpretar`, {
       method: "POST",
@@ -157,7 +180,7 @@ async function interpretar(base64: string, formato: string) {
         sala: _salaCodigo,
         papel: _papel,
         idiomaOrigem: _idioma,
-        idiomaDestino: _idioma,
+        idiomaDestino: _idiomaOutro,
         audioBase64: base64,
         formato,
       }),
@@ -172,7 +195,7 @@ async function interpretar(base64: string, formato: string) {
         tipo: "fala",
         papel: _papel,
         idiomaOrigem: _idioma,
-        idiomaDestino: _idioma,
+        idiomaDestino: _idiomaOutro,
         original: "",
         traduzido: "",
         em: Date.now(),
@@ -182,7 +205,7 @@ async function interpretar(base64: string, formato: string) {
         tipo: "fala",
         papel: _papel,
         idiomaOrigem: _idioma,
-        idiomaDestino: _idioma,
+        idiomaDestino: _idiomaOutro,
         original: dados.original,
         traduzido: dados.traduzido,
         em: Date.now(),
@@ -194,10 +217,10 @@ async function interpretar(base64: string, formato: string) {
 }
 
 function tentarReconectar() {
-  if (_encerrado) return;
+  if (_encerrado || _bloqueado) return;
   _reconnectDelay = _reconnectDelay === 0 ? 1000 : Math.min(_reconnectDelay * 2, 8000);
   _reconnectTimer = setTimeout(() => {
-    if (!_encerrado) {
+    if (!_encerrado && !_bloqueado) {
       conectar(_salaCodigo, _papel, _idioma, _callbacks);
     }
   }, _reconnectDelay);

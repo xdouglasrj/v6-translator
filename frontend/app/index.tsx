@@ -136,6 +136,8 @@ if (p) {
         addLog(`Erro: ${msg}`);
       },
       onLog: (msg) => addLog(msg),
+      onConexao: () => setErro(null),
+      onFalaEnviada: () => setErro(null),
     });
 
     setConectado(true);

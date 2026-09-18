@@ -27,6 +27,8 @@ type MotorCallbacks = {
   onNivel: (rms: number) => void;
   onErro: (msg: string) => void;
   onLog: (msg: string) => void;
+  onConexao?: () => void;
+  onFalaEnviada?: () => void;
 };
 
 let _callbacks: MotorCallbacks | null = null;
@@ -57,6 +59,7 @@ export function iniciar(
   conectarSala(salaCodigo, papel, idioma, {
     onConexao: () => {
       callbacks.onLog("Sala conectada");
+      callbacks.onConexao?.();
       mudarEstado("OUVINDO");
     },
     onDesconexao: (_code, motivo) => {
@@ -123,6 +126,8 @@ async function _iniciarAudio(callbacks: MotorCallbacks) {
         if (!ok) {
           callbacks.onLog("Fala enfileirada (sala offline)");
           mudarEstado("OUVINDO");
+        } else {
+          callbacks.onFalaEnviada?.();
         }
 
         callbacks.onMetricas({ falaMs, postMs, traducaoMs: 0 });
