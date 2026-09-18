@@ -46,7 +46,7 @@ class EscutaAudioModule : Module() {
 
   private var mediaPlayer: MediaPlayer? = null
   private val audioQueue = ConcurrentLinkedQueue<AudioQueueItem>()
-  private var isPlaying = false
+  private var tocandoAudio = false
 
   @Volatile private var voiceThreshold = 1500
   private val msParaComecar = 150
@@ -234,7 +234,7 @@ class EscutaAudioModule : Module() {
         FileOutputStream(arquivo).use { it.write(bytes) }
         val item = AudioQueueItem(base64, formato, promise, arquivo)
         audioQueue.add(item)
-        if (!isPlaying) {
+        if (!tocandoAudio) {
           tocarProximo()
         }
       } catch (e: Exception) {
@@ -468,7 +468,7 @@ class EscutaAudioModule : Module() {
 
   private fun tocarProximo() {
     val item = audioQueue.poll() ?: return
-    isPlaying = true
+    tocandoAudio = true
     mediaPlayer = MediaPlayer().apply {
       setAudioAttributes(
         AudioAttributes.Builder()
@@ -483,7 +483,7 @@ class EscutaAudioModule : Module() {
         it.release()
         if (mediaPlayer == this) mediaPlayer = null
         item.promise.resolve(null)
-        isPlaying = false
+        tocandoAudio = false
         tocarProximo()
       }
       setOnErrorListener { _, _, _ ->
@@ -491,7 +491,7 @@ class EscutaAudioModule : Module() {
         release()
         if (mediaPlayer == this) mediaPlayer = null
         item.promise.reject("MEDIA_PLAYER_ERROR", "Erro ao reproduzir áudio", null)
-        isPlaying = false
+        tocandoAudio = false
         tocarProximo()
         true
       }
@@ -505,7 +505,7 @@ class EscutaAudioModule : Module() {
       release()
     }
     mediaPlayer = null
-    isPlaying = false
+    tocandoAudio = false
     audioQueue.forEach { it.arquivo.delete(); it.promise.reject("SESSION_ENDED", "Sessão encerrada", null) }
     audioQueue.clear()
   }
