@@ -29,7 +29,6 @@ import {
   parar as pararMotor,
   alterarSensibilidade,
   obterEstado,
-  idiomaDoOutro,
 } from "@/src/conversa/motor";
 import { obterHost, obterSalaCodigo, idiomaDoOutro as salaIdiomaDoOutro } from "@/src/conversa/sala";
 
