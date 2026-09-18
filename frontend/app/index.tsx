@@ -29,8 +29,9 @@ import {
   parar as pararMotor,
   alterarSensibilidade,
   obterEstado,
+  idiomaDoOutro,
 } from "@/src/conversa/motor";
-import { obterHost, obterSalaCodigo } from "@/src/conversa/sala";
+import { obterHost, obterSalaCodigo, idiomaDoOutro as salaIdiomaDoOutro } from "@/src/conversa/sala";
 
 const CHAVE_PAPEL = "escutaai:papel";
 const CHAVE_IDIOMA = "escutaai:idioma";
@@ -54,6 +55,7 @@ export default function Index() {
   const [conectado, setConectado] = useState(false);
   const [outroConectado, setOutroConectado] = useState(false);
   const [outroIdioma, setOutroIdioma] = useState<IdiomaCodigo | null>(null);
+  const [idiomaOutroSala, setIdiomaOutroSala] = useState<IdiomaCodigo | null>(null);
   const [falas, setFalas] = useState<Fala[]>([]);
   const [nivel, setNivel] = useState(0);
   const [metricas, setMetricas] = useState<Metricas | null>(null);
@@ -129,7 +131,10 @@ if (p) {
       },
       onMetricas: (m) => setMetricas(m),
       onOutroConectado: (c) => setOutroConectado(c),
-      onOutroIdioma: (id) => setOutroIdioma(id),
+      onOutroIdioma: (id) => {
+        setOutroIdioma(id);
+        setIdiomaOutroSala(salaIdiomaDoOutro());
+      },
       onNivel: (rms) => setNivel(rms),
       onErro: (msg) => {
         setErro(msg);
@@ -271,6 +276,20 @@ if (p) {
             <MaterialCommunityIcons name="cog" size={16} color={colors.muted} />
           )}
         </Pressable>
+
+        <View style={styles.conexaoBanner}>
+          {outroConectado ? (
+            <Text style={[styles.conexaoTexto, { color: colors.success }]}>
+              {papel === "piloto"
+                ? `CONECTADO COM O PASSAGEIRO — ${idiomaOutroSala ? obterIdioma(idiomaOutroSala).nome : "idioma desconhecido"}`
+                : `CONECTADO COM O PILOTO — ${idiomaOutroSala ? obterIdioma(idiomaOutroSala).nome : "português"}`}
+            </Text>
+          ) : (
+            <Text style={[styles.conexaoTexto, { color: colors.warning }]}>
+              {papel === "piloto" ? "AGUARDANDO O PASSAGEIRO" : "AGUARDANDO O PILOTO"}
+            </Text>
+          )}
+        </View>
 
         <View style={styles.estadoContainer}>
           <View style={[styles.estadoIndicator, { backgroundColor: _corEstado(estado, colors) }]} />
@@ -534,6 +553,19 @@ const useStyles = makeStyles((colors) => StyleSheet.create({
   estadoContainer: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 },
   estadoIndicator: { width: 12, height: 12, borderRadius: 6 },
   estadoTexto: { color: colors.onSurface, fontSize: 22, fontWeight: "900", letterSpacing: 1 },
+  conexaoBanner: {
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 12,
+    backgroundColor: colors.surfaceSecondary,
+    borderWidth: 2,
+  },
+  conexaoTexto: {
+    fontSize: 16,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+    textAlign: "center",
+  },
   nivelContainer: {
     height: 4, backgroundColor: colors.surfaceTertiary, borderRadius: 2,
     marginBottom: 12, overflow: "hidden",

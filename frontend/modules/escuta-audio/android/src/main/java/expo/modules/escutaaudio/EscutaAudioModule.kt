@@ -189,7 +189,7 @@ class EscutaAudioModule : Module() {
       }
       val utteranceId = UUID.randomUUID().toString()
       textToSpeech?.language = Locale.forLanguageTag(idioma)
-      val result = textToSpeech?.speak(texto, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+      val result = textToSpeech?.speak(texto, TextToSpeech.QUEUE_ADD, null, utteranceId)
       if (result == TextToSpeech.SUCCESS) {
         speechPromises[utteranceId] = promise
       } else {
@@ -434,6 +434,14 @@ class EscutaAudioModule : Module() {
 
     override fun onDone(utteranceId: String) {
       speechPromises.remove(utteranceId)?.resolve(Unit)
+    }
+
+    override fun onStop(utteranceId: String, interrupted: Boolean) {
+      speechPromises.remove(utteranceId)?.resolve(Unit)
+    }
+
+    override fun onError(utteranceId: String, errorCode: Int) {
+      speechPromises.remove(utteranceId)?.reject("TTS_ERROR", "Erro de síntese: código $errorCode", null)
     }
 
     @Deprecated("Required by Android TextToSpeech")

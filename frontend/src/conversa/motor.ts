@@ -2,7 +2,6 @@ import {
   iniciarSessao,
   encerrarSessao,
   definirSensibilidade,
-  silenciarEntrada,
   falar,
   aoEvento,
 } from "@/src/audio/escutaAudio";
@@ -37,8 +36,8 @@ let _idioma: IdiomaCodigo = "pt-BR";
 let _estado: EstadoConversa = "DESLIGADO";
 let _falas: Fala[] = [];
 let _listeners: { remove: () => void }[] = [];
-let _silenciado = false;
 let _falaInicioMs = 0;
+let _outroConectado = false;
 
 export function iniciar(
   papel: Papel,
@@ -81,7 +80,7 @@ export function parar() {
   encerrarSala();
   _estado = "DESLIGADO";
   _falas = [];
-  _silenciado = false;
+  _outroConectado = false;
   _callbacks = null;
 }
 
@@ -105,7 +104,6 @@ async function _iniciarAudio(callbacks: MotorCallbacks) {
     _listeners.push(
       aoEvento("onFalaComecou", (dados) => {
         if (!("em" in dados)) return;
-        if (_silenciado) return;
         _falaInicioMs = Date.now();
         mudarEstado("FALANDO");
       }),
@@ -114,7 +112,11 @@ async function _iniciarAudio(callbacks: MotorCallbacks) {
     _listeners.push(
       aoEvento("onFalaPronta", (dados) => {
         if (!("base64" in dados)) return;
-        if (_silenciado) return;
+        if (!_outroConectado) {
+          callbacks.onLog("Outro lado não conectado — fala descartada");
+          mudarEstado("OUVINDO");
+          return;
+        }
         const falaMs = Date.now() - _falaInicioMs;
         mudarEstado("ENVIANDO");
         callbacks.onLog(`Fala capturada: ${(dados.ms / 1000).toFixed(1)}s`);
@@ -150,6 +152,7 @@ async function _iniciarAudio(callbacks: MotorCallbacks) {
 function _tratarMensagem(msg: MensagemRecebida, callbacks: MotorCallbacks) {
   switch (msg.tipo) {
     case "presenca":
+      _outroConectado = msg.conectado;
       callbacks.onOutroConectado(msg.conectado);
       if (msg.conectado) {
         callbacks.onOutroIdioma(msg.idioma);
@@ -158,6 +161,15 @@ function _tratarMensagem(msg: MensagemRecebida, callbacks: MotorCallbacks) {
       break;
 
     case "fala":
+      if (msg.papel === _papel) {
+        if (msg.original) {
+          _falas = [{ original: msg.original, traduzido: msg.traduzido, em: msg.em }, ..._falas].slice(0, MAX_FALAS);
+          callbacks.onFalaAdicionada(_falas[0]);
+        }
+        mudarEstado("OUVINDO");
+        return;
+      }
+
       if (!msg.traduzido) {
         mudarEstado("OUVINDO");
         return;
@@ -167,16 +179,15 @@ function _tratarMensagem(msg: MensagemRecebida, callbacks: MotorCallbacks) {
 
       void (async () => {
         try {
-          await silenciarEntrada(true);
-          _silenciado = true;
-          await falar(msg.traduzido, _idioma);
+          await Promise.race([
+            falar(msg.traduzido, _idioma),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("falar timeout")), 20_000)),
+          ]);
           await new Promise((r) => setTimeout(r, ESPERA_POS_FALA_MS));
-          await silenciarEntrada(false);
-          _silenciado = false;
           mudarEstado("OUVINDO");
           enviarFilaSePossivel();
         } catch {
-          _silenciado = false;
+          callbacks.onLog("falar falhou ou timeout, seguindo");
           mudarEstado("OUVINDO");
         }
       })();
