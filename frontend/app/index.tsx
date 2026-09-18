@@ -75,21 +75,26 @@ export default function Index() {
     setLogs((prev) => [{ time, text }, ...prev].slice(0, 50));
   }, []);
 
-  useEffect(() => {
+useEffect(() => {
     void (async () => {
       const p = await storage.getItem(CHAVE_PAPEL, null as Papel | null);
       const i = await storage.getItem(CHAVE_IDIOMA, "pt-BR" as IdiomaCodigo);
       const s = await storage.getItem(CHAVE_SALA, SALA_DEFAULT);
       const h = await storage.getItem(CHAVE_HOST, "");
       const sens = await storage.getItem(CHAVE_SENSIBILIDADE, 1500);
-if (p) {
-      setPapel(p);
-      if (i) setIdiomaCodigo(i);
-      if (s) setSalaCodigo(s);
-      if (h !== null) setSalaHost(h);
-      if (sens !== null) setSensibilidade(sens);
-      setTela(p === "turista" ? "idioma" : "conversa");
-    }
+      if (p) {
+        setPapel(p);
+        if (p === "piloto") {
+          setIdiomaCodigo("pt-BR");
+          await storage.setItem(CHAVE_IDIOMA, "pt-BR");
+        } else if (i) {
+          setIdiomaCodigo(i);
+        }
+        if (s) setSalaCodigo(s);
+        if (h !== null) setSalaHost(h);
+        if (sens !== null) setSensibilidade(sens);
+        setTela(p === "turista" ? "idioma" : "conversa");
+      }
     })();
   }, []);
 
@@ -151,8 +156,10 @@ if (p) {
     setPapel(p);
     await storage.setItem(CHAVE_PAPEL, p);
     if (p === "piloto") {
+      setIdiomaCodigo("pt-BR");
+      await storage.setItem(CHAVE_IDIOMA, "pt-BR");
       setTela("conversa");
-      void iniciarSessao(p, idiomaCodigo);
+      void iniciarSessao(p, "pt-BR");
     } else {
       setTela("idioma");
     }
@@ -285,7 +292,7 @@ if (p) {
             </Text>
           ) : (
             <Text style={[styles.conexaoTexto, { color: colors.warning }]}>
-              {papel === "piloto" ? "AGUARDANDO O PASSAGEIRO" : "AGUARDANDO O PILOTO"}
+              {papel === "piloto" ? "DESCONECTADO — aguardando o passageiro" : "DESCONECTADO — aguardando o piloto"}
             </Text>
           )}
         </View>
