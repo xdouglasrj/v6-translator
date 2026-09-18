@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "V6 Intercom Audio Tester",
-    "slug": "v6-intercom-audio-tester",
+    "name": "Escuta Aí",
+    "slug": "escuta-ai",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "frontend",
+    "scheme": "escutaai",
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
