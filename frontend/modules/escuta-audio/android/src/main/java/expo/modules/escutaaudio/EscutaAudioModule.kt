@@ -2,6 +2,7 @@ package expo.modules.escutaaudio
 
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
+import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -38,8 +39,8 @@ class EscutaAudioModule : Module() {
   private val msMaximoDeFala = 15000
 
   private val sampleRate = 16000
-  private val channelConfig = AudioRecord.CHANNEL_IN_MONO
-  private val audioFormat = AudioRecord.ENCODING_PCM_16BIT
+  private val channelConfig = AudioFormat.CHANNEL_IN_MONO
+  private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
   private val frameSizeMs = 20
   private val samplesPerFrame = sampleRate * frameSizeMs / 1000
   private val bytesPerFrame = samplesPerFrame * 2
@@ -123,10 +124,8 @@ class EscutaAudioModule : Module() {
           }
         } else {
           @Suppress("DEPRECATION")
-          val scoStarted = manager.startBluetoothSco()
-          if (scoStarted) {
-            manager.isBluetoothScoOn = true
-          }
+          manager.startBluetoothSco()
+          manager.isBluetoothScoOn = true
         }
 
         val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
@@ -338,7 +337,9 @@ class EscutaAudioModule : Module() {
       for (frame in speechFrames) {
         val shorts = ShortArray(frame.size / 2)
         for (i in 0 until shorts.size) {
-          shorts[i] = (frame[i * 2].toInt() | (frame[i * 2 + 1].toInt() shl 8)).toShort()
+          val baixo = frame[i * 2].toInt() and 0xFF
+          val alto = frame[i * 2 + 1].toInt() shl 8
+          shorts[i] = (baixo or alto).toShort()
         }
         sum += calcularRms(shorts, shorts.size).toLong()
       }
