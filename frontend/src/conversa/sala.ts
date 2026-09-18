@@ -12,6 +12,7 @@ export type MensagemSala =
 export type MensagemRecebida =
   | { tipo: "presenca"; papel: Papel; idioma: IdiomaCodigo; conectado: boolean }
   | { tipo: "fala"; papel: Papel; idiomaOrigem: IdiomaCodigo; idiomaDestino: IdiomaCodigo; original: string; traduzido: string; em: number }
+  | { tipo: "audio"; papel: Papel; em: number; formato: string; audioBase64: string }
   | { tipo: "pong"; em: number }
   | { tipo: "erro"; motivo: string };
 

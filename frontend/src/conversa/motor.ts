@@ -3,6 +3,7 @@ import {
   encerrarSessao,
   definirSensibilidade,
   falar,
+  tocarAudio,
   aoEvento,
 } from "@/src/audio/escutaAudio";
 import {
@@ -38,6 +39,7 @@ let _falas: Fala[] = [];
 let _listeners: { remove: () => void }[] = [];
 let _falaInicioMs = 0;
 let _outroConectado = false;
+const _audioPendente = new Map<number, { traduzido: string; timeout: ReturnType<typeof setTimeout> }>();
 
 export function iniciar(
   papel: Papel,
@@ -76,6 +78,8 @@ export function iniciar(
 export function parar() {
   _listeners.forEach((l) => l.remove());
   _listeners = [];
+  _audioPendente.forEach(({ timeout }) => clearTimeout(timeout));
+  _audioPendente.clear();
   void encerrarSessao();
   encerrarSala();
   _estado = "DESLIGADO";
@@ -177,24 +181,28 @@ function _tratarMensagem(msg: MensagemRecebida, callbacks: MotorCallbacks) {
       mudarEstado("OUVINDO_TRADUCAO");
       callbacks.onLog(`Recebendo tradução: ${msg.traduzido.slice(0, 40)}...`);
 
-      void (async () => {
-        try {
-          await Promise.race([
-            falar(msg.traduzido, _idioma),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("falar timeout")), 20_000)),
-          ]);
-          await new Promise((r) => setTimeout(r, ESPERA_POS_FALA_MS));
-          mudarEstado("OUVINDO");
-          enviarFilaSePossivel();
-        } catch {
-          callbacks.onLog("falar falhou ou timeout, seguindo");
-          mudarEstado("OUVINDO");
-        }
-      })();
+      const timeout = setTimeout(() => {
+        _audioPendente.delete(msg.em);
+        callbacks.onLog("Áudio não chegou em 3s — falando com TTS");
+        void falarComFallback(msg.traduzido, callbacks);
+      }, 3000);
+      _audioPendente.set(msg.em, { traduzido: msg.traduzido, timeout });
 
       if (msg.original) {
         _falas = [{ original: msg.original, traduzido: msg.traduzido, em: msg.em }, ..._falas].slice(0, MAX_FALAS);
         callbacks.onFalaAdicionada(_falas[0]);
+      }
+      break;
+
+    case "audio":
+      if (msg.papel === _papel) {
+        return;
+      }
+      const pendente = _audioPendente.get(msg.em);
+      if (pendente) {
+        clearTimeout(pendente.timeout);
+        _audioPendente.delete(msg.em);
+        void tocarAudioComFallback(msg.audioBase64, msg.formato, pendente.traduzido, callbacks);
       }
       break;
 
@@ -213,4 +221,31 @@ function _tratarMensagem(msg: MensagemRecebida, callbacks: MotorCallbacks) {
 function mudarEstado(estado: EstadoConversa) {
   _estado = estado;
   _callbacks?.onEstadoChange(estado);
+}
+
+async function falarComFallback(texto: string, callbacks: MotorCallbacks) {
+  try {
+    await Promise.race([
+      falar(texto, _idioma),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("falar timeout")), 20_000)),
+    ]);
+    await new Promise((r) => setTimeout(r, ESPERA_POS_FALA_MS));
+    mudarEstado("OUVINDO");
+    enviarFilaSePossivel();
+  } catch {
+    callbacks.onLog("falar falhou ou timeout, seguindo");
+    mudarEstado("OUVINDO");
+  }
+}
+
+async function tocarAudioComFallback(base64: string, formato: string, textoFallback: string, callbacks: MotorCallbacks) {
+  try {
+    await tocarAudio(base64, formato);
+    await new Promise((r) => setTimeout(r, ESPERA_POS_FALA_MS));
+    mudarEstado("OUVINDO");
+    enviarFilaSePossivel();
+  } catch {
+    callbacks.onLog("tocarAudio falhou — falando com TTS");
+    await falarComFallback(textoFallback, callbacks);
+  }
 }

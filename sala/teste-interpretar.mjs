@@ -41,13 +41,22 @@ function criarConexao(url) {
   });
 }
 
-function esperarMensagem(conexao, tipo, timeoutMs = 15000) {
+function esperarMensagemNaLista(mensagens, tipo, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Timeout esperando "${tipo}"`)), timeoutMs);
-    conexao.resolvers[tipo] = (msg) => {
-      clearTimeout(timer);
-      resolve(msg);
-    };
+    const existente = mensagens.find((m) => m.tipo === tipo);
+    if (existente) return resolve(existente);
+
+    const inicio = Date.now();
+    const intervalo = setInterval(() => {
+      const msg = mensagens.find((m) => m.tipo === tipo);
+      if (msg) {
+        clearInterval(intervalo);
+        resolve(msg);
+      } else if (Date.now() - inicio > timeoutMs) {
+        clearInterval(intervalo);
+        reject(new Error(`Timeout esperando "${tipo}"`));
+      }
+    }, 50);
   });
 }
 
@@ -61,16 +70,19 @@ async function executarTeste() {
   console.log(`Sala: ${salaCodigo}`);
   console.log(`Audio: ${caminhoAudio} (${formato}, ${audioBuffer.length} bytes)`);
 
-  // Conectar turista
+  // Conectar piloto
   const salaUrl = baseUrl.replace(/^http/, "ws") + `/sala/${salaCodigo}`;
+  const piloto = await criarConexao(salaUrl);
+  console.log("Piloto conectado");
+
+  piloto.ws.send(JSON.stringify({ tipo: "entrar", papel: "piloto", idioma: "pt-BR" }));
+
+  // Conectar turista
   const turista = await criarConexao(salaUrl);
   console.log("Turista conectado");
 
   // Turista entra
   turista.ws.send(JSON.stringify({ tipo: "entrar", papel: "turista", idioma: "en" }));
-
-  // Preparar para receber fala
-  const falaRecebida = esperarMensagem(turista, "fala");
 
   // POST /interpretar como piloto
   const resp = await fetch(`${baseUrl}/interpretar`, {
@@ -92,14 +104,33 @@ async function executarTeste() {
   // Verificar resposta
   assert.ok(dados.original, "original deve ser não vazio");
   assert.ok(dados.traduzido, "traduzido deve ser não vazio");
-  console.log("Resposta contém original e traduzido: OK");
+  assert.ok(dados.ms && typeof dados.ms.voz === "number", "ms.voz deve ser número");
+  console.log("Resposta contém original, traduzido e ms.voz: OK");
 
   // Verificar que turista recebeu fala
-  const fala = await falaRecebida;
+  const fala = await esperarMensagemNaLista(turista.mensagens, "fala", 10000);
   assert.strictEqual(fala.tipo, "fala");
   assert.strictEqual(fala.traduzido, dados.traduzido);
   console.log("Turista recebeu fala com traduzido correto: OK");
 
+  // Esperar mensagem audio (até 10s)
+  const audio = await esperarMensagemNaLista(turista.mensagens, "audio", 10000);
+  assert.strictEqual(audio.tipo, "audio");
+  assert.strictEqual(audio.formato, "mp3");
+  assert.strictEqual(audio.papel, "piloto");
+  assert.strictEqual(audio.em, fala.em);
+  const audioBytes = Buffer.from(audio.audioBase64, "base64");
+  assert.ok(audioBytes.length > 5000, `audio deve ter >5000 bytes, tem ${audioBytes.length}`);
+  console.log(`Turista recebeu audio: formato=${audio.formato}, bytes=${audioBytes.length}, ms.voz=${dados.ms.voz}, papel=${audio.papel}`);
+
+  // Verificar que piloto NÃO recebeu audio nem fala
+  const pilotoAudio = piloto.mensagens.find((m) => m.tipo === "audio");
+  const pilotoFala = piloto.mensagens.find((m) => m.tipo === "fala");
+  assert.strictEqual(pilotoAudio, undefined, "piloto não deve receber audio");
+  assert.strictEqual(pilotoFala, undefined, "piloto não deve receber fala");
+  console.log("Piloto não recebeu audio nem fala: OK");
+
+  piloto.ws.close();
   turista.ws.close();
   console.log("\nTESTE OK");
 }

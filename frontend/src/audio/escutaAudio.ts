@@ -8,6 +8,7 @@ type NativeEscutaAudio = {
   silenciarEntrada: (silenciado: boolean) => Promise<void>;
   falar: (texto: string, idioma: string) => Promise<void>;
   pararFala: () => Promise<void>;
+  tocarAudio: (base64: string, formato: string) => Promise<void>;
   addListener: (event: string, listener: () => void) => { remove: () => void };
 };
 
@@ -65,6 +66,11 @@ export async function falar(texto: string, idioma: string): Promise<void> {
 
 export async function pararFala(): Promise<void> {
   if (nativeModule) return nativeModule.pararFala();
+  throw new Error("Disponível só no aplicativo Android");
+}
+
+export async function tocarAudio(base64: string, formato: string): Promise<void> {
+  if (nativeModule) return nativeModule.tocarAudio(base64, formato);
   throw new Error("Disponível só no aplicativo Android");
 }
 

@@ -120,6 +120,7 @@ async function traduzir(
           { role: "system", content: instrucao },
           { role: "user", content: texto },
         ],
+        provider: { order: ["groq"], allow_fallbacks: true },
       }),
     });
     if (!resp.ok) continue;
@@ -131,6 +132,53 @@ async function traduzir(
   }
 
   throw new Error("traducao:falha");
+}
+
+// Chamar OpenRouter: TTS (gerar voz)
+async function gerarVoz(
+  apiKey: string,
+  texto: string
+): Promise<{ audioBase64: string; ms: number; custoVoz?: number }> {
+  const inicio = Date.now();
+  const resp = await fetch("https://openrouter.ai/api/v1/audio/speech", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "x-ai/grok-voice-tts-1.0",
+      input: texto,
+      voice: "eve",
+      response_format: "mp3",
+    }),
+  });
+  const msVoz = Date.now() - inicio;
+
+  let custoVoz: number | undefined;
+  const custoHeader = resp.headers.get("x-openrouter-cost");
+  if (custoHeader) {
+    const c = Number(custoHeader);
+    if (!Number.isNaN(c)) custoVoz = c;
+  }
+
+  if (!resp.ok) {
+    const err = await resp.text().catch(() => "");
+    throw new Error(`voz:${resp.status} ${err}`);
+  }
+
+  const arrayBuffer = await resp.arrayBuffer();
+  const chunks: string[] = [];
+  const view = new Uint8Array(arrayBuffer);
+  const chunkSize = 32768;
+  for (let i = 0; i < view.length; i += chunkSize) {
+    const chunk = view.slice(i, i + chunkSize);
+    chunks.push(String.fromCharCode.apply(null, [...chunk]));
+  }
+  const binaryString = chunks.join("");
+  const audioBase64 = btoa(binaryString);
+
+  return { audioBase64, ms: msVoz, custoVoz };
 }
 
 // Worker principal
@@ -223,11 +271,38 @@ export default {
         console.error(`Entrega falhou: ${e}`);
       }
 
+      // Gerar voz e entregar audio
+      let msVoz = 0;
+      let custoVoz: number | undefined;
+      try {
+        const voz = await gerarVoz(env.OPENROUTER_API_KEY, resultadoTraducao.texto);
+        msVoz = voz.ms;
+        custoVoz = voz.custoVoz;
+        const audioMsg = {
+          tipo: "audio" as const,
+          papel: fala.papel,
+          em: fala.em,
+          formato: "mp3" as const,
+          audioBase64: voz.audioBase64,
+        };
+        try {
+          await stub.fetch("https://sala/entregar", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(audioMsg),
+          });
+        } catch (e) {
+          console.error(`Entrega audio falhou: ${e}`);
+        }
+      } catch (e) {
+        console.error(`Geracao voz falhou: ${e}`);
+      }
+
       console.log(
         `Sala: ${body.sala} | ${body.papel} | ` +
         `${resultadoTranscricao.usage.seconds}s audio | ` +
         `$${resultadoTranscricao.usage.cost} | ` +
-        `transc: ${msTranscricao}ms | trad: ${msTraducao}ms`
+        `transc: ${msTranscricao}ms | trad: ${msTraducao}ms | voz: ${msVoz}ms`
       );
 
       return Response.json({
@@ -240,7 +315,9 @@ export default {
           transcricao: msTranscricao,
           traducao: msTraducao,
           total: Date.now() - inicio,
+          voz: msVoz,
         },
+        custoVoz,
       });
     }
 
@@ -271,6 +348,9 @@ export class Sala {
     // POST /entregar: receber mensagem do Worker e enviar ao outro celular
     if (url.pathname === "/entregar" && request.method === "POST") {
       const body = (await request.json()) as MensagemFala;
+      if (!body.papel || typeof body.papel !== "string") {
+        return Response.json({ erro: "papel obrigatorio" }, { status: 400 });
+      }
       const papelRemetente = body.papel;
       const destino = this.state.getWebSockets().find((ws) => {
         const d = ws.deserializeAttachment() as DadosConexao | null;

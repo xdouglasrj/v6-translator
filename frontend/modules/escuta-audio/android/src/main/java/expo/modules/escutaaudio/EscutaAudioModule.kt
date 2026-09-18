@@ -5,7 +5,9 @@ import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.MediaPlayer
 import android.media.MediaRecorder
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -15,10 +17,20 @@ import android.util.Base64
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import java.io.File
+import java.io.FileOutputStream
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+
+private data class AudioQueueItem(
+  val base64: String,
+  val formato: String,
+  val promise: Promise,
+  val arquivo: File
+)
 
 class EscutaAudioModule : Module() {
   private var textToSpeech: TextToSpeech? = null
@@ -31,6 +43,10 @@ class EscutaAudioModule : Module() {
   private val isCapturing = AtomicBoolean(false)
   private val isMuted = AtomicBoolean(false)
   private var communicationDevice: AudioDeviceInfo? = null
+
+  private var mediaPlayer: MediaPlayer? = null
+  private val audioQueue = ConcurrentLinkedQueue<AudioQueueItem>()
+  private var isPlaying = false
 
   @Volatile private var voiceThreshold = 1500
   private val msParaComecar = 150
@@ -94,6 +110,7 @@ class EscutaAudioModule : Module() {
       textToSpeech = null
       isTtsReady = false
       speechPromises.clear()
+      pararPlayerELimparFila()
     }
 
     AsyncFunction("iniciarSessao") { promise: Promise ->
@@ -204,6 +221,25 @@ class EscutaAudioModule : Module() {
       }
       speechPromises.clear()
       promise.resolve(Unit)
+    }
+
+    AsyncFunction("tocarAudio") { base64: String, formato: String, promise: Promise ->
+      val context = appContext.reactContext ?: run {
+        promise.reject("NO_CONTEXT", "Contexto Android indisponível.", null)
+        return@AsyncFunction
+      }
+      try {
+        val bytes = Base64.decode(base64, Base64.DEFAULT)
+        val arquivo = File(context.cacheDir, "voz-${System.currentTimeMillis()}.$formato")
+        FileOutputStream(arquivo).use { it.write(bytes) }
+        val item = AudioQueueItem(base64, formato, promise, arquivo)
+        audioQueue.add(item)
+        if (!isPlaying) {
+          tocarProximo()
+        }
+      } catch (e: Exception) {
+        promise.reject("TOCAR_AUDIO_FAILED", "Falha ao preparar áudio: ${e.message}", null)
+      }
     }
   }
 
@@ -413,6 +449,7 @@ class EscutaAudioModule : Module() {
     audioRecord?.release()
     audioRecord = null
 
+    pararPlayerELimparFila()
     desfazerPerfilChamada()
   }
 
@@ -427,6 +464,50 @@ class EscutaAudioModule : Module() {
       manager.isBluetoothScoOn = false
     }
     communicationDevice = null
+  }
+
+  private fun tocarProximo() {
+    val item = audioQueue.poll() ?: return
+    isPlaying = true
+    mediaPlayer = MediaPlayer().apply {
+      setAudioAttributes(
+        AudioAttributes.Builder()
+          .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+          .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+          .build()
+      )
+      setDataSource(appContext.reactContext!!, Uri.fromFile(item.arquivo))
+      setOnPreparedListener { it.start() }
+      setOnCompletionListener {
+        item.arquivo.delete()
+        it.release()
+        if (mediaPlayer == this) mediaPlayer = null
+        item.promise.resolve(null)
+        isPlaying = false
+        tocarProximo()
+      }
+      setOnErrorListener { _, _, _ ->
+        item.arquivo.delete()
+        release()
+        if (mediaPlayer == this) mediaPlayer = null
+        item.promise.reject("MEDIA_PLAYER_ERROR", "Erro ao reproduzir áudio", null)
+        isPlaying = false
+        tocarProximo()
+        true
+      }
+      prepareAsync()
+    }
+  }
+
+  private fun pararPlayerELimparFila() {
+    mediaPlayer?.apply {
+      stop()
+      release()
+    }
+    mediaPlayer = null
+    isPlaying = false
+    audioQueue.forEach { it.arquivo.delete(); it.promise.reject("SESSION_ENDED", "Sessão encerrada", null) }
+    audioQueue.clear()
   }
 
   private val ttsProgressListener = object : UtteranceProgressListener() {
