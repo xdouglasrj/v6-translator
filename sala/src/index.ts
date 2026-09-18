@@ -3,6 +3,7 @@
 
 interface Env {
   SALA: DurableObjectNamespace;
+  OPENROUTER_API_KEY?: string;
 }
 
 // Tipo do dado anexado a cada WebSocket via serializeAttachment
@@ -44,14 +45,202 @@ type MensagemRecebida =
   | MensagemIdioma
   | MensagemPing;
 
+// Mapa de nomes de idiomas em inglês para a instrução do sistema
+const NOMES_IDIOMAS: Record<string, string> = {
+  pt: "Portuguese",
+  en: "English",
+  es: "Spanish",
+  fr: "French",
+};
+
+// Validação de campos obrigatórios do /interpretar
+function validarCampos(body: Record<string, unknown>): string | null {
+  const campos = ["sala", "papel", "idiomaOrigem", "idiomaDestino", "audioBase64", "formato"];
+  for (const c of campos) {
+    if (!body[c] || typeof body[c] !== "string") return "campo invalido";
+  }
+  if (body.papel !== "piloto" && body.papel !== "turista") return "papel invalido";
+  const idiomas = ["pt-BR", "en", "es", "fr"];
+  if (!idiomas.includes(body.idiomaOrigem as string)) return "idiomaOrigem invalido";
+  if (!idiomas.includes(body.idiomaDestino as string)) return "idiomaDestino invalido";
+  const formatos = ["m4a", "wav", "mp3", "ogg"];
+  if (!formatos.includes(body.formato as string)) return "formato invalido";
+  return null;
+}
+
+// Chamar OpenRouter: transcrição
+async function transcrever(
+  apiKey: string,
+  audioBase64: string,
+  formato: string,
+  idiomaOrigem: string
+): Promise<{ text: string; usage: { seconds: number; cost: number } }> {
+  const iso639: Record<string, string> = { "pt-BR": "pt", en: "en", es: "es", fr: "fr" };
+  const resp = await fetch("https://openrouter.ai/api/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "openai/whisper-large-v3-turbo",
+      input_audio: { data: audioBase64, format: formato },
+      language: iso639[idiomaOrigem],
+    }),
+  });
+  if (!resp.ok) throw new Error(`transcricao:${resp.status}`);
+  return resp.json() as Promise<{ text: string; usage: { seconds: number; cost: number } }>;
+}
+
+// Chamar OpenRouter: tradução
+async function traduzir(
+  apiKey: string,
+  texto: string,
+  idiomaOrigem: string,
+  idiomaDestino: string
+): Promise<{ texto: string; modelo: string }> {
+  const origem = NOMES_IDIOMAS[idiomaOrigem.replace("-BR", "")] ?? idiomaOrigem;
+  const destino = NOMES_IDIOMAS[idiomaDestino.replace("-BR", "")] ?? idiomaDestino;
+  const instrucao =
+    `You are an interpreter. Translate the user message from ${origem} to ${destino}. ` +
+    "Preserve names, numbers, prices, times and places. Do not answer questions. " +
+    "Do not add information. Do not explain. Return only the translation.";
+
+  const modelos = [
+    "meta-llama/llama-3.1-8b-instruct",
+    "inclusionai/ling-3.0-flash",
+  ];
+
+  for (const modelo of modelos) {
+    const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: modelo,
+        temperature: 0.2,
+        messages: [
+          { role: "system", content: instrucao },
+          { role: "user", content: texto },
+        ],
+      }),
+    });
+    if (!resp.ok) continue;
+    const dados = (await resp.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    const traduzido = dados.choices?.[0]?.message?.content?.trim();
+    if (traduzido) return { texto: traduzido, modelo };
+  }
+
+  throw new Error("traducao:falha");
+}
+
 // Worker principal
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    // Rota de saúde
     if (url.pathname === "/saude") {
       return Response.json({ ok: true });
+    }
+
+    // POST /interpretar: transcrever + traduzir + entregar
+    if (url.pathname === "/interpretar" && request.method === "POST") {
+      if (!env.OPENROUTER_API_KEY) {
+        return Response.json({ erro: "chave nao configurada na sala" }, { status: 503 });
+      }
+
+      let body: Record<string, unknown>;
+      try {
+        body = (await request.json()) as Record<string, unknown>;
+      } catch {
+        return Response.json({ erro: "pedido invalido" }, { status: 400 });
+      }
+
+      const erroValidacao = validarCampos(body);
+      if (erroValidacao) {
+        return Response.json({ erro: "pedido invalido" }, { status: 400 });
+      }
+
+      const audio = body.audioBase64 as string;
+      if (audio.length > 6_990_000) {
+        return Response.json({ erro: "audio grande demais" }, { status: 413 });
+      }
+
+      const inicio = Date.now();
+      let resultadoTranscricao: { text: string; usage: { seconds: number; cost: number } };
+
+      try {
+        resultadoTranscricao = await transcrever(
+          env.OPENROUTER_API_KEY,
+          audio,
+          body.formato as string,
+          body.idiomaOrigem as string
+        );
+      } catch {
+        return Response.json({ erro: "falha ao transcrever" }, { status: 502 });
+      }
+
+      const texto = resultadoTranscricao.text.trim();
+      if (!texto) {
+        return Response.json({ vazio: true });
+      }
+
+      const msTranscricao = Date.now() - inicio;
+
+      let resultadoTraducao: { texto: string; modelo: string };
+      try {
+        resultadoTraducao = await traduzir(
+          env.OPENROUTER_API_KEY,
+          texto,
+          body.idiomaOrigem as string,
+          body.idiomaDestino as string
+        );
+      } catch {
+        return Response.json({ erro: "falha ao traduzir" }, { status: 502 });
+      }
+
+      const msTraducao = Date.now() - inicio - msTranscricao;
+
+      // Entregar ao outro celular via método interno do DO
+      const fala = {
+        tipo: "fala" as const,
+        papel: body.papel,
+        idiomaOrigem: body.idiomaOrigem,
+        idiomaDestino: body.idiomaDestino,
+        original: texto,
+        traduzido: resultadoTraducao.texto,
+        em: Date.now(),
+      };
+
+      const id = env.SALA.idFromName(body.sala as string);
+      const stub = env.SALA.get(id);
+      try {
+        await stub.fetch("https://sala/entregar", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(fala),
+        });
+      } catch (e) {
+        console.error(`Entrega falhou: ${e}`);
+      }
+
+      console.log(
+        `Sala: ${body.sala} | ${body.papel} | ` +
+        `${resultadoTranscricao.usage.seconds}s audio | ` +
+        `$${resultadoTranscricao.usage.cost} | ` +
+        `transc: ${msTranscricao}ms | trad: ${msTraducao}ms`
+      );
+
+      return Response.json({
+        original: texto,
+        traduzido: resultadoTraducao.texto,
+        modelo: resultadoTraducao.modelo,
+        segundosAudio: resultadoTranscricao.usage.seconds,
+        custo: resultadoTranscricao.usage.cost,
+        ms: {
+          transcricao: msTranscricao,
+          traducao: msTraducao,
+          total: Date.now() - inicio,
+        },
+      });
     }
 
     // Rota de sala: upgrade para WebSocket
@@ -76,6 +265,22 @@ export class Sala {
   }
 
   async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    // POST /entregar: receber mensagem do Worker e enviar ao outro celular
+    if (url.pathname === "/entregar" && request.method === "POST") {
+      const body = (await request.json()) as MensagemFala;
+      const papelRemetente = body.papel;
+      const destino = this.state.getWebSockets().find((ws) => {
+        const d = ws.deserializeAttachment() as DadosConexao | null;
+        return d && !d.cheia && d.papel !== papelRemetente;
+      });
+      if (destino) {
+        destino.send(JSON.stringify(body));
+      }
+      return Response.json({ ok: true });
+    }
+
     // Verificar limite de conexões
     const conexoesAtuais = this.state.getWebSockets();
     if (conexoesAtuais.length >= 2) {
